@@ -18,7 +18,6 @@
 ** This intentionally matches LJ_WASM_HOST_NYI in the host contract.
 */
 #define LJ_WASM_JIT_STATUS_NYI	(-2)
-#define LJ_WASM_JIT_F_IR_LOWERED	0x00000001u
 
 LJ_FUNC void lj_wasm_jit_build_nyi(lua_State *L, SBuf *module);
 #if LJ_HASJIT

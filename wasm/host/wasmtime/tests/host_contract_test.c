@@ -26,6 +26,9 @@ typedef struct TestCtx {
   uint32_t last_ctypeid;
   uint32_t last_trace;
   uint32_t last_flags;
+  uint64_t last_memory_min;
+  uint64_t last_memory_max;
+  uint32_t last_memory_flags;
   uint32_t last_exitno;
   void *last_lua_state;
   void *last_base;
@@ -98,6 +101,9 @@ static int test_jit_compile(void *ud, const LJWasmJITModule *module,
   ctx->compile_calls++;
   ctx->last_trace = module->trace;
   ctx->last_flags = module->flags;
+  ctx->last_memory_min = module->memory_min;
+  ctx->last_memory_max = module->memory_max;
+  ctx->last_memory_flags = module->memory_flags;
   *handle = &ctx->trace_handle;
   return LJ_WASM_HOST_OK;
 }
@@ -147,7 +153,10 @@ int main(void) {
   module.bytes = module_bytes;
   module.size = sizeof(module_bytes);
   module.trace = 42;
-  module.flags = 7;
+  module.flags = LJ_WASM_JIT_F_IR_LOWERED | LJ_WASM_JIT_F_IMPORT_ENV_MEMORY;
+  module.memory_min = 1;
+  module.memory_max = 0;
+  module.memory_flags = LJ_WASM_JIT_MEMORY_F_64;
 
   lj_wasmtime_host_clear_hooks();
   assert(strcmp(lj_wasmtime_host_status_name(LJ_WASM_HOST_OK), "ok") == 0);
@@ -230,7 +239,11 @@ int main(void) {
   assert(handle == &ctx.trace_handle);
   assert(ctx.compile_calls == 1);
   assert(ctx.last_trace == 42);
-  assert(ctx.last_flags == 7);
+  assert(ctx.last_flags == (LJ_WASM_JIT_F_IR_LOWERED |
+                            LJ_WASM_JIT_F_IMPORT_ENV_MEMORY));
+  assert(ctx.last_memory_min == 1);
+  assert(ctx.last_memory_max == 0);
+  assert(ctx.last_memory_flags == LJ_WASM_JIT_MEMORY_F_64);
 
   assert(lj_wasm_import_jit_enter(handle, &fake_lua, &fake_base, 3) ==
          LJ_WASM_HOST_OK);

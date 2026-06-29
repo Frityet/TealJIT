@@ -40,6 +40,12 @@ typedef struct LJWasmFFISig {
   uint8_t rettype;		/* LJWasmScalarType. */
 } LJWasmFFISig;
 
+#define LJ_WASM_JIT_F_IR_LOWERED	0x00000001u
+#define LJ_WASM_JIT_F_IMPORT_ENV_MEMORY	0x00000002u
+
+#define LJ_WASM_JIT_MEMORY_F_64		0x00000001u
+#define LJ_WASM_JIT_MEMORY_F_HAS_MAX	0x00000002u
+
 typedef struct LJWasmJITModule {
   const uint8_t *bytes;		/* Encoded Wasm module bytes. */
   size_t size;			/* Size of bytes. */
@@ -47,6 +53,10 @@ typedef struct LJWasmJITModule {
   uint32_t entry;		/* Entry export/function index. */
   uint32_t exit;		/* Exit trampoline export/function index. */
   uint32_t flags;		/* Backend feature flags. */
+  uint64_t memory_min;		/* Required imported memory minimum pages. */
+  uint64_t memory_max;		/* Required imported memory maximum pages. */
+  uint32_t memory_flags;	/* LJ_WASM_JIT_MEMORY_F_* for env.memory. */
+  uint32_t reserved;		/* Reserved for ABI-compatible extensions. */
 } LJWasmJITModule;
 
 /*

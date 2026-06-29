@@ -17,7 +17,7 @@ named `lj_wasm_import_*`.
 | `lj_wasm_import_ffi_callback_new` | Clears output, delegates, otherwise returns `NYI`. | Allocate a callable Wasm table/host function handle for a LuaJIT callback slot. |
 | `lj_wasm_import_ffi_callback_slot` | Validates handle/output, delegates, otherwise returns `NYI`. | Map a callback handle back to its LuaJIT callback slot for `callback:set/free`. |
 | `lj_wasm_import_ffi_callback_free` | Delegates to a hook when present. | Release a callback table/host function handle. |
-| `lj_wasm_import_jit_compile` | Validates module/output, clears output, delegates, otherwise returns `NYI`. | Decode `LJWasmJITModule`, compile the trace module with Wasmtime, and store a compiled trace handle. |
+| `lj_wasm_import_jit_compile` | Validates module/output, clears output, delegates, otherwise returns `NYI`. | Decode `LJWasmJITModule`, compile the trace module with Wasmtime, link `env.memory` when `LJ_WASM_JIT_F_IMPORT_ENV_MEMORY` is set, and store a compiled trace handle. |
 | `lj_wasm_import_jit_free` | Delegates to a hook when present. | Drop a compiled trace handle. |
 | `lj_wasm_import_jit_enter` | Validates handle, delegates, otherwise returns `NYI`. | Enter a compiled trace export with guest state/base/exit number. |
 | `lj_wasm_import_jit_patch_exit` | Validates handles, delegates, otherwise returns `NYI`. | Patch a trace exit continuation from one compiled trace to another. |
@@ -46,6 +46,12 @@ Do not cast guest pointer values directly to native pointers.
 Host handles should be opaque guest-visible IDs or table indexes rather than raw
 native pointers. The guest stores them in pointer-sized slots, but the host owns
 the backing objects and lifetime.
+
+Lowered trace modules that load Lua stack slots set
+`LJ_WASM_JIT_F_IMPORT_ENV_MEMORY` and describe the required memory in
+`memory_min`, `memory_max`, and `memory_flags`. A real Wasmtime host must satisfy
+that import with the running LuaJIT instance's existing memory64 memory in the
+same store. It must not instantiate the trace with a fresh memory.
 
 The C scaffold uses direct native pointer types because it is an ABI contract
 and test stub. The Rust pseudocode shows the memory-translation boundary that a

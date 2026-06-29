@@ -458,6 +458,10 @@ int lj_wasm_jit_compile_nyi(lua_State *L, uint32_t traceno,
   module.entry = 0;
   module.exit = 0;
   module.flags = 0;
+  module.memory_min = 0;
+  module.memory_max = 0;
+  module.memory_flags = 0;
+  module.reserved = 0;
 
   status = lj_wasm_host_jit_compile(&module, handle);
 
@@ -482,7 +486,12 @@ int lj_wasm_jit_compile_trace(lua_State *L, const GCtrace *T,
   module.trace = T->traceno;
   module.entry = 0;
   module.exit = 0;
-  module.flags = lowered ? LJ_WASM_JIT_F_IR_LOWERED : 0;
+  module.flags = lowered ? (LJ_WASM_JIT_F_IR_LOWERED |
+			    LJ_WASM_JIT_F_IMPORT_ENV_MEMORY) : 0;
+  module.memory_min = lowered ? 1 : 0;
+  module.memory_max = 0;
+  module.memory_flags = lowered ? LJ_WASM_JIT_MEMORY_F_64 : 0;
+  module.reserved = 0;
 
   status = lj_wasm_host_jit_compile(&module, handle);
 

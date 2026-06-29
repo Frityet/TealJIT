@@ -116,7 +116,10 @@ fn register_luajit_host_imports(linker: &mut Linker<HostState>) -> anyhow::Resul
         |mut caller: Caller<'_, HostState>, module_ptr: i64, handle_out_ptr: i64| -> i32 {
             let _ = (caller, module_ptr, handle_out_ptr);
             // TODO: read LJWasmJITModule, copy module bytes out of guest
-            // memory, compile them with Wasmtime, then store a trace handle.
+            // memory, compile them with Wasmtime, and instantiate with the
+            // current LuaJIT memory64 object if IMPORT_ENV_MEMORY is set.
+            // Store a trace handle containing the instance, typed entry export,
+            // and memory identity.
             NYI
         },
     )?;

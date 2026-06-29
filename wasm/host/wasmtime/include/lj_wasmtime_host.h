@@ -51,6 +51,12 @@ typedef struct LJWasmFFISig {
   uint8_t rettype;
 } LJWasmFFISig;
 
+#define LJ_WASM_JIT_F_IR_LOWERED 0x00000001u
+#define LJ_WASM_JIT_F_IMPORT_ENV_MEMORY 0x00000002u
+
+#define LJ_WASM_JIT_MEMORY_F_64 0x00000001u
+#define LJ_WASM_JIT_MEMORY_F_HAS_MAX 0x00000002u
+
 typedef struct LJWasmJITModule {
   const uint8_t *bytes;
   size_t size;
@@ -58,6 +64,10 @@ typedef struct LJWasmJITModule {
   uint32_t entry;
   uint32_t exit;
   uint32_t flags;
+  uint64_t memory_min;
+  uint64_t memory_max;
+  uint32_t memory_flags;
+  uint32_t reserved;
 } LJWasmJITModule;
 
 typedef int (*LJWasmtimeFFILoadFn)(void *ctx, const char *name, int global,
