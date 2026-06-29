@@ -521,6 +521,7 @@ static BCPos bcemit_INS(FuncState *fs, BCIns ins)
 static void teal_check_record_field_read(FuncState *fs, ExpDesc *e);
 static void teal_check_record_field_store(FuncState *fs, ExpDesc *var,
 					  ExpDesc *e);
+static int teal_record_field_find(FuncState *fs, uint16_t sid, GCstr *field);
 
 /* -- Bytecode emitter for expressions ------------------------------------ */
 
@@ -761,7 +762,25 @@ static void bcemit_store(FuncState *fs, ExpDesc *var, ExpDesc *e)
 /* Emit method lookup expression. */
 static void bcemit_method(FuncState *fs, ExpDesc *e, ExpDesc *key)
 {
-  BCReg idx, func, fr2, obj = expr_toanyreg(fs, e);
+  uint16_t shape = e->teal_shape;
+  uint16_t sig = 0;
+  FuncState *sigfs = NULL;
+  uint8_t ttype = TEAL_T_UNKNOWN;
+  uint8_t tnil = 0;
+  BCReg idx, func, fr2, obj;
+  if (shape != 0 && expr_isstrk(key)) {
+    int fidx = teal_record_field_find(fs, shape, key->u.sval);
+    if (fidx >= 0) {
+      ttype = fs->teal_shape_ftype[fidx];
+      tnil = fs->teal_shape_fnil[fidx];
+      sig = fs->teal_shape_fsig[fidx];
+      sigfs = fs->teal_shape_fsigfs[fidx];
+    } else if (fs->ls->teal && fs->ls->teal_strict) {
+      lj_lex_error(fs->ls, 0, LJ_ERR_XTEAL,
+		   "unknown record field, ", strdata(key->u.sval));
+    }
+  }
+  obj = expr_toanyreg(fs, e);
   expr_free(fs, e);
   func = fs->freereg;
   fr2 = fs->ls->fr2;
@@ -779,6 +798,10 @@ static void bcemit_method(FuncState *fs, ExpDesc *e, ExpDesc *key)
   }
   e->u.s.info = func;
   e->k = VNONRELOC;
+  e->teal_type = ttype;
+  e->teal_nil = tnil;
+  e->teal_sig = sig;
+  e->teal_sigfs = sigfs;
 }
 
 /* -- Bytecode emitter for branches --------------------------------------- */
@@ -1594,6 +1617,41 @@ static int teal_record_field_add(LexState *ls, uint16_t sid, GCstr *field,
   return idx;
 }
 
+static uint16_t teal_record_shape_clone(LexState *ls, FuncState *srcfs,
+					uint16_t sid, BCReg reg)
+{
+  FuncState *dstfs = ls->fs;
+  TealRecordShape *src = teal_record_shape(srcfs, sid);
+  TealRecordShape *dst;
+  uint16_t newid, i;
+  if (!ls->teal || src == NULL)
+    return 0;
+  if (dstfs->teal_nshape >= LJ_MAX_LOCVAR)
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many record shapes, ", "");
+  dst = &dstfs->teal_shapes[dstfs->teal_nshape];
+  dst->reg = reg;
+  dst->first = dstfs->teal_nfield;
+  dst->count = 0;
+  dst->open = src->open;
+  dstfs->teal_nshape++;
+  newid = dstfs->teal_nshape;
+  dstfs->teal_vshape[reg] = newid;
+  for (i = 0; i < srcfs->teal_nfield; i++) {
+    if (srcfs->teal_shape_owner[i] == sid) {
+      TealTypeDesc t;
+      teal_type_unknown(&t);
+      t.type = srcfs->teal_shape_ftype[i];
+      t.nilok = srcfs->teal_shape_fnil[i];
+      t.sig = srcfs->teal_shape_fsig[i];
+      t.sigfs = srcfs->teal_shape_fsigfs[i];
+      (void)teal_record_field_add(ls, newid, srcfs->teal_shape_field[i],
+				  t, t.sig, t.sigfs);
+    }
+  }
+  dst->open = src->open;
+  return newid;
+}
+
 static void teal_check_record_field_read(FuncState *fs, ExpDesc *e)
 {
   int idx;
@@ -1770,6 +1828,9 @@ static TealTypeDesc teal_parse_type_tail(LexState *ls, TealTypeDesc td)
 {
   int depth = 0;
   while (!teal_type_end(ls) || depth > 0) {
+    if (depth == 0 && (ls->tok == TK_name || (!LJ_52 && ls->tok == TK_goto)) &&
+	lj_lex_lookahead(ls) == ':')
+      break;
     if (ls->tok == TK_name || (!LJ_52 && ls->tok == TK_goto)) {
       TealTypeDesc part;
       teal_type_from_name(&part, strV(&ls->tokval));
@@ -2507,12 +2568,16 @@ static void expr_field(LexState *ls, ExpDesc *v)
   FuncState *fs = ls->fs;
   ExpDesc key;
   uint16_t shape;
-  expr_toanyreg(fs, v);
   shape = v->teal_shape;
+  expr_toanyreg(fs, v);
   lj_lex_next(ls);  /* Skip dot or colon. */
   expr_str(ls, &key);
   expr_index(fs, v, &key);
+  v->teal_type = TEAL_T_UNKNOWN;
+  v->teal_nil = 0;
   v->teal_shape = 0;
+  v->teal_sig = 0;
+  v->teal_sigfs = NULL;
   if (shape != 0) {
     int idx = teal_record_field_find(fs, shape, key.u.sval);
     v->teal_field_shape = shape;
@@ -2520,6 +2585,8 @@ static void expr_field(LexState *ls, ExpDesc *v)
     if (idx >= 0) {
       v->teal_type = fs->teal_shape_ftype[idx];
       v->teal_nil = fs->teal_shape_fnil[idx];
+      v->teal_sig = fs->teal_shape_fsig[idx];
+      v->teal_sigfs = fs->teal_shape_fsigfs[idx];
     }
   }
 }
@@ -2707,7 +2774,8 @@ static BCReg parse_params(LexState *ls, int needself)
 static void parse_chunk(LexState *ls);
 
 /* Parse body of a function. */
-static void parse_body(LexState *ls, ExpDesc *e, int needself, BCLine line)
+static void parse_body(LexState *ls, ExpDesc *e, int needself,
+		       uint16_t self_shape, BCLine line)
 {
   FuncState fs, *pfs = ls->fs;
   FuncScope bl;
@@ -2718,6 +2786,8 @@ static void parse_body(LexState *ls, ExpDesc *e, int needself, BCLine line)
   fscope_begin(&fs, &bl, 0);
   fs.linedefined = line;
   fs.numparams = (uint8_t)parse_params(ls, needself);
+  if (needself && self_shape != 0)
+    (void)teal_record_shape_clone(ls, pfs, self_shape, 0);
   if (ls->teal && lex_opt(ls, ':')) {
     TealTypeDesc ret = teal_parse_type(ls);
     fs.teal_rettype = ret.type;
@@ -2764,22 +2834,22 @@ static BCReg expr_list(LexState *ls, ExpDesc *v)
 }
 
 static BCReg expr_list_call(LexState *ls, ExpDesc *v, FuncState *sigfs,
-			    uint16_t sig)
+			    uint16_t sig, BCReg argbase)
 {
   BCReg n = 1;
   expr(ls, v);
-  teal_check_call_arg(ls, sigfs, sig, n, v);
+  teal_check_call_arg(ls, sigfs, sig, (BCReg)(argbase+n), v);
   while (lex_opt(ls, ',')) {
     expr_tonextreg(ls->fs, v);
     expr(ls, v);
     n++;
-    teal_check_call_arg(ls, sigfs, sig, n, v);
+    teal_check_call_arg(ls, sigfs, sig, (BCReg)(argbase+n), v);
   }
   return n;
 }
 
 /* Parse function argument list. */
-static void parse_args(LexState *ls, ExpDesc *e)
+static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args)
 {
   FuncState *fs = ls->fs;
   ExpDesc args;
@@ -2800,7 +2870,7 @@ static void parse_args(LexState *ls, ExpDesc *e)
     if (ls->tok == ')') {  /* f(). */
       args.k = VVOID;
     } else {
-      nargs = expr_list_call(ls, &args, sigfs, sig);
+      nargs = expr_list_call(ls, &args, sigfs, sig, implicit_args);
       if (args.k == VCALL)  /* f(a, b, g()) or f(a, b, ...). */
 	setbc_b(bcptr(fs, &args), 0), openargs = 1;  /* Pass on multiple results. */
     }
@@ -2808,19 +2878,20 @@ static void parse_args(LexState *ls, ExpDesc *e)
   } else if (ls->tok == '{') {
     expr_table(ls, &args);
     nargs = 1;
-    teal_check_call_arg(ls, sigfs, sig, 1, &args);
+    teal_check_call_arg(ls, sigfs, sig, (BCReg)(implicit_args+1), &args);
   } else if (ls->tok == TK_string) {
     expr_init(&args, VKSTR, 0);
     args.u.sval = strV(&ls->tokval);
     args.teal_type = TEAL_T_STRING;
     lj_lex_next(ls);
     nargs = 1;
-    teal_check_call_arg(ls, sigfs, sig, 1, &args);
+    teal_check_call_arg(ls, sigfs, sig, (BCReg)(implicit_args+1), &args);
   } else {
     err_syntax(ls, LJ_ERR_XFUNARG);
     return;  /* Silence compiler. */
   }
-  teal_check_call_arity(ls, sigfs, sig, nargs, openargs);
+  teal_check_call_arity(ls, sigfs, sig, (BCReg)(implicit_args+nargs),
+			openargs);
   lj_assertFS(e->k == VNONRELOC, "bad expr type %d", e->k);
   base = e->u.s.info;  /* Base register for call. */
   if (args.k == VCALL) {
@@ -2872,11 +2943,11 @@ static void expr_primary(LexState *ls, ExpDesc *v)
       lj_lex_next(ls);
       expr_str(ls, &key);
       bcemit_method(fs, v, &key);
-      parse_args(ls, v);
+      parse_args(ls, v, 1);
     } else if (ls->tok == '(' || ls->tok == TK_string || ls->tok == '{') {
       expr_tonextreg(fs, v);
       if (ls->fr2) bcreg_reserve(fs, 1);
-      parse_args(ls, v);
+      parse_args(ls, v, 0);
     } else {
       break;
     }
@@ -2932,7 +3003,7 @@ static void expr_simple(LexState *ls, ExpDesc *v)
     return;
   case TK_function:
     lj_lex_next(ls);
-    parse_body(ls, v, 0, ls->linenumber);
+    parse_body(ls, v, 0, 0, ls->linenumber);
     return;
   default:
     expr_primary(ls, v);
@@ -3279,7 +3350,7 @@ static void parse_local(LexState *ls)
     v.u.s.aux = fs->varmap[fs->freereg];
     bcreg_reserve(fs, 1);
     var_add(ls, 1);
-    parse_body(ls, &b, 0, ls->linenumber);
+    parse_body(ls, &b, 0, 0, ls->linenumber);
     /* bcemit_store(fs, &v, &b) without setting VSTACK_VAR_RW. */
     expr_free(fs, &b);
     expr_toreg(fs, &b, v.u.s.info);
@@ -3366,6 +3437,7 @@ static void parse_func(LexState *ls, BCLine line)
   FuncState *fs;
   ExpDesc v, b;
   int needself = 0;
+  uint16_t self_shape = 0;
   lj_lex_next(ls);  /* Skip 'function'. */
   /* Parse function name. */
   var_lookup(ls, &v);
@@ -3373,9 +3445,10 @@ static void parse_func(LexState *ls, BCLine line)
     expr_field(ls, &v);
   if (ls->tok == ':') {  /* Optional colon to signify method call. */
     needself = 1;
+    self_shape = v.teal_shape;
     expr_field(ls, &v);
   }
-  parse_body(ls, &b, needself, line);
+  parse_body(ls, &b, needself, self_shape, line);
   fs = ls->fs;
   bcemit_store(fs, &v, &b);
   fs->bcbase[fs->pc - 1].line = line;  /* Set line for the store. */

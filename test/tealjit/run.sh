@@ -19,6 +19,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" record_fields.tl
 "$LUAJIT" function_calls.tl
 "$LUAJIT" function_type_annotations.tl
+"$LUAJIT" record_method_colon_call.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   echo "as_bad.tl unexpectedly passed" >&2
@@ -103,3 +104,27 @@ if "$LUAJIT" record_function_type_assignment_bad.tl >/tmp/tealjit-record-ftype-a
   exit 1
 fi
 grep -q "record field type mismatch" /tmp/tealjit-record-ftype-assign.out
+
+if "$LUAJIT" record_method_colon_arg_bad.tl >/tmp/tealjit-method-arg.out 2>&1; then
+  echo "record_method_colon_arg_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "function argument type mismatch" /tmp/tealjit-method-arg.out
+
+if "$LUAJIT" record_method_dot_missing_self_bad.tl >/tmp/tealjit-method-self.out 2>&1; then
+  echo "record_method_dot_missing_self_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "function argument type mismatch" /tmp/tealjit-method-self.out
+
+if "$LUAJIT" record_method_unknown_bad.tl >/tmp/tealjit-method-unknown.out 2>&1; then
+  echo "record_method_unknown_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "unknown record field" /tmp/tealjit-method-unknown.out
+
+if "$LUAJIT" record_method_self_unknown_bad.tl >/tmp/tealjit-method-self-unknown.out 2>&1; then
+  echo "record_method_self_unknown_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "unknown record field" /tmp/tealjit-method-self-unknown.out
