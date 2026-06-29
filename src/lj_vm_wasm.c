@@ -127,6 +127,12 @@ int lj_vm_wasm_trace_enter(lua_State *L, TValue *base, TraceNo traceno)
 
   status = lj_wasm_host_jit_enter((LJWasmHostHandle)T->wasmjit, L, base,
 				  &ex, 0);
+  if (status >= 0) {
+    if ((uint32_t)status >= T->nsnap)
+      status = LJ_WASM_HOST_ERR;
+    else
+      status = lj_vm_wasm_trace_exit(L, traceno, (ExitNo)status, &ex);
+  }
 
   setmref(g->jit_base, NULL);
   setvmstate(g, INTERP);
