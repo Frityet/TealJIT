@@ -56,3 +56,11 @@ else
    local narrowed_remaining: integer = text_or_int
    assert(narrowed_remaining == 0)
 end
+
+local and_union: string | integer = "branch"
+local and_text: string = and_union is string and and_union or "fallback"
+assert(and_text == "branch")
+
+local and_maybe: integer | nil = 5
+local and_number: integer = and_maybe is integer and and_maybe + 1 or 0
+assert(and_number == 6)

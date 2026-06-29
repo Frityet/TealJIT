@@ -4478,6 +4478,13 @@ static const struct {
 
 /* Forward declaration. */
 static BinOpr expr_binop(LexState *ls, ExpDesc *v, uint32_t limit);
+static int teal_apply_narrow(FuncState *fs, ExpDesc *cond, int keep_matches,
+			     TealTypeDesc *old,
+			     uint16_t *oldshape,
+			     FuncState **oldshapefs);
+static void teal_restore_narrow(FuncState *fs, ExpDesc *cond,
+				TealTypeDesc old, uint16_t oldshape,
+				FuncState *oldshapefs);
 
 /* Parse unary expression. */
 static void expr_unop(LexState *ls, ExpDesc *v)
@@ -4526,12 +4533,23 @@ static BinOpr expr_binop(LexState *ls, ExpDesc *v, uint32_t limit)
       nextop = token2binop(ls);
     } else {
       TealTypeDesc lefttype, righttype, resulttype;
+      TealTypeDesc oldnarrow;
+      uint16_t oldshape = 0;
+      FuncState *oldshapefs = NULL;
       int is_or = op == OPR_OR;
+      int is_and = op == OPR_AND;
+      int narrowed = 0;
+      ExpDesc cond = *v;
       if (is_or)
 	lefttype = teal_type_from_expr(ls->fs, v);
       bcemit_binop_left(ls->fs, op, v);
+      if (is_and)
+	narrowed = teal_apply_narrow(ls->fs, &cond, 1, &oldnarrow,
+				     &oldshape, &oldshapefs);
       /* Parse binary expression with higher priority. */
       nextop = expr_binop(ls, &v2, priority[op].right);
+      if (narrowed)
+	teal_restore_narrow(ls->fs, &cond, oldnarrow, oldshape, oldshapefs);
       if (is_or)
 	righttype = teal_type_from_expr(ls->fs, &v2);
       bcemit_binop(ls->fs, op, v, &v2);
