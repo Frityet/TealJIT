@@ -52,6 +52,8 @@ typedef enum {
   VVOID
 } ExpKind;
 
+typedef struct FuncState FuncState;
+
 /* Expression descriptor. */
 typedef struct ExpDesc {
   union {
@@ -68,6 +70,8 @@ typedef struct ExpDesc {
   uint8_t teal_type;	/* Static Teal type, if known. */
   uint8_t teal_nil;	/* Static Teal type includes nil. */
   uint16_t teal_shape;	/* Static Teal record shape for this value. */
+  uint16_t teal_sig;	/* Static Teal function signature for this value. */
+  FuncState *teal_sigfs;	/* Function state owning teal_sig. */
   uint16_t teal_field_shape;  /* Record shape for indexed field LHS/read. */
   GCstr *teal_field;	/* Dot-field name for record shape checks. */
 } ExpDesc;
@@ -92,6 +96,15 @@ typedef struct TealTypeDesc {
 } TealTypeDesc;
 
 #define TEAL_MAX_RECORD_FIELDS	512
+#define TEAL_MAX_FUNC_PARAMS	512
+
+typedef struct TealFuncSig {
+  uint16_t first;
+  uint8_t nparam;
+  uint8_t minparam;
+  uint8_t rettype;
+  uint8_t retnil;
+} TealFuncSig;
 
 typedef struct TealRecordShape {
   BCReg reg;
@@ -121,6 +134,8 @@ static LJ_AINLINE void expr_init(ExpDesc *e, ExpKind k, uint32_t info)
   e->teal_type = TEAL_T_UNKNOWN;
   e->teal_nil = 0;
   e->teal_shape = 0;
+  e->teal_sig = 0;
+  e->teal_sigfs = NULL;
   e->teal_field_shape = 0;
   e->teal_field = NULL;
 }
@@ -158,7 +173,7 @@ typedef uint16_t VarIndex;
 #define VSTACK_LABEL		0x04	/* Label. */
 
 /* Per-function state. */
-typedef struct FuncState {
+struct FuncState {
   GCtab *kt;			/* Hash table for constants. */
   LexState *ls;			/* Lexer state. */
   lua_State *L;			/* Lua state. */
@@ -183,17 +198,30 @@ typedef struct FuncState {
   VarIndex uvtmp[LJ_MAX_UPVAL];	/* Temporary upvalue map. */
   uint8_t teal_vtype[LJ_MAX_LOCVAR];	/* Static Teal local types. */
   uint8_t teal_vnil[LJ_MAX_LOCVAR];	/* Static Teal local nilability. */
+  uint16_t teal_vsig[LJ_MAX_LOCVAR];	/* Static Teal local function sig. */
+  FuncState *teal_vsigfs[LJ_MAX_LOCVAR]; /* Owners of local function sigs. */
   uint16_t teal_vshape[LJ_MAX_LOCVAR];	/* Static Teal local record shape. */
   TealRecordShape teal_shapes[LJ_MAX_LOCVAR];	/* Parser-only shapes. */
   GCstr *teal_shape_field[TEAL_MAX_RECORD_FIELDS];
   uint16_t teal_shape_owner[TEAL_MAX_RECORD_FIELDS];
   uint8_t teal_shape_ftype[TEAL_MAX_RECORD_FIELDS];
   uint8_t teal_shape_fnil[TEAL_MAX_RECORD_FIELDS];
+  uint16_t teal_shape_fsig[TEAL_MAX_RECORD_FIELDS];
+  FuncState *teal_shape_fsigfs[TEAL_MAX_RECORD_FIELDS];
+  TealFuncSig teal_sigs[LJ_MAX_LOCVAR];
+  uint8_t teal_sig_ptype[TEAL_MAX_FUNC_PARAMS];
+  uint8_t teal_sig_pnil[TEAL_MAX_FUNC_PARAMS];
+  uint16_t teal_nsig;
+  uint16_t teal_nsigparam;
+  uint8_t teal_paramtype[LJ_MAX_LOCVAR];
+  uint8_t teal_paramnil[LJ_MAX_LOCVAR];
+  uint8_t teal_paramoptional[LJ_MAX_LOCVAR];
+  uint8_t teal_nparam;
   uint16_t teal_nshape;
   uint16_t teal_nfield;
   uint8_t teal_rettype;			/* Static Teal return type. */
   uint8_t teal_retnil;			/* Static Teal return nilability. */
-} FuncState;
+};
 
 /* Binary and unary operators. ORDER OPR */
 typedef enum BinOpr {
@@ -680,6 +708,13 @@ static void bcemit_store(FuncState *fs, ExpDesc *var, ExpDesc *e)
   BCIns ins;
   if (var->k == VLOCAL) {
     fs->ls->vstack[var->u.s.aux].info |= VSTACK_VAR_RW;
+    if (fs->ls->teal && e->teal_type == TEAL_T_FUNCTION) {
+      fs->teal_vsig[var->u.s.info] = e->teal_sig;
+      fs->teal_vsigfs[var->u.s.info] = e->teal_sigfs ? e->teal_sigfs : fs;
+    } else if (fs->ls->teal) {
+      fs->teal_vsig[var->u.s.info] = 0;
+      fs->teal_vsigfs[var->u.s.info] = NULL;
+    }
     expr_free(fs, e);
     expr_toreg(fs, e, var->u.s.info);
     return;
@@ -1372,6 +1407,63 @@ static void teal_check_assign(LexState *ls, TealTypeDesc want, ExpDesc *e,
   }
 }
 
+static TealFuncSig *teal_func_sig(FuncState *fs, uint16_t id)
+{
+  return fs != NULL && id != 0 && id <= fs->teal_nsig ?
+	 &fs->teal_sigs[id-1] : NULL;
+}
+
+static uint16_t teal_func_sig_new(LexState *ls, FuncState *pfs, FuncState *cfs)
+{
+  TealFuncSig *sig;
+  uint16_t i, first;
+  if (!ls->teal) return 0;
+  if (pfs->teal_nsig >= LJ_MAX_LOCVAR)
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many function signatures, ", "");
+  if (pfs->teal_nsigparam + cfs->teal_nparam > TEAL_MAX_FUNC_PARAMS)
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many function parameters, ", "");
+  first = pfs->teal_nsigparam;
+  sig = &pfs->teal_sigs[pfs->teal_nsig];
+  sig->first = first;
+  sig->nparam = cfs->teal_nparam;
+  sig->minparam = cfs->teal_nparam;
+  sig->rettype = cfs->teal_rettype;
+  sig->retnil = cfs->teal_retnil;
+  for (i = 0; i < cfs->teal_nparam; i++) {
+    pfs->teal_sig_ptype[first+i] = cfs->teal_paramtype[i];
+    pfs->teal_sig_pnil[first+i] = cfs->teal_paramnil[i];
+    if (cfs->teal_paramoptional[i] && i < sig->minparam)
+      sig->minparam = (uint8_t)i;
+  }
+  pfs->teal_nsigparam = (uint16_t)(pfs->teal_nsigparam + cfs->teal_nparam);
+  pfs->teal_nsig++;
+  return pfs->teal_nsig;
+}
+
+static void teal_check_call_arg(LexState *ls, FuncState *sigfs, uint16_t sid,
+				BCReg narg, ExpDesc *arg)
+{
+  TealFuncSig *sig = teal_func_sig(sigfs, sid);
+  TealTypeDesc want;
+  if (!ls->teal || sid == 0 || sig == NULL || narg == 0 ||
+      narg > sig->nparam)
+    return;
+  want.type = sigfs->teal_sig_ptype[sig->first + narg - 1];
+  want.nilok = sigfs->teal_sig_pnil[sig->first + narg - 1];
+  teal_check_assign(ls, want, arg, "function argument type mismatch, ");
+}
+
+static void teal_check_call_arity(LexState *ls, FuncState *sigfs,
+				  uint16_t sid, BCReg nargs, int open)
+{
+  TealFuncSig *sig = teal_func_sig(sigfs, sid);
+  if (!ls->teal || !ls->teal_strict || sid == 0 || sig == NULL || open)
+    return;
+  if (nargs < sig->minparam || nargs > sig->nparam)
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		 "function arity mismatch, ", "");
+}
+
 static uint16_t teal_record_shape_new(LexState *ls, BCReg reg)
 {
   FuncState *fs = ls->fs;
@@ -1408,7 +1500,8 @@ static int teal_record_field_find(FuncState *fs, uint16_t sid, GCstr *field)
 }
 
 static int teal_record_field_add(LexState *ls, uint16_t sid, GCstr *field,
-				 TealTypeDesc t)
+				 TealTypeDesc t, uint16_t fsig,
+				 FuncState *fsigfs)
 {
   FuncState *fs = ls->fs;
   TealRecordShape *shape = teal_record_shape(fs, sid);
@@ -1424,6 +1517,8 @@ static int teal_record_field_add(LexState *ls, uint16_t sid, GCstr *field,
   fs->teal_shape_field[idx] = field;
   fs->teal_shape_ftype[idx] = t.type;
   fs->teal_shape_fnil[idx] = t.nilok;
+  fs->teal_shape_fsig[idx] = fsig;
+  fs->teal_shape_fsigfs[idx] = fsigfs;
   shape->count++;
   return idx;
 }
@@ -1442,6 +1537,8 @@ static void teal_check_record_field_read(FuncState *fs, ExpDesc *e)
   }
   e->teal_type = fs->teal_shape_ftype[idx];
   e->teal_nil = fs->teal_shape_fnil[idx];
+  e->teal_sig = fs->teal_shape_fsig[idx];
+  e->teal_sigfs = fs->teal_shape_fsigfs[idx];
 }
 
 static void teal_check_record_field_store(FuncState *fs, ExpDesc *var,
@@ -1461,7 +1558,9 @@ static void teal_check_record_field_store(FuncState *fs, ExpDesc *var,
       have.type = e->teal_type;
       have.nilok = e->teal_nil;
       (void)teal_record_field_add(ls, var->teal_field_shape,
-				  var->teal_field, have);
+				  var->teal_field, have, e->teal_sig,
+				  e->teal_sig != 0 ?
+				  (e->teal_sigfs ? e->teal_sigfs : fs) : NULL);
     } else if (ls->teal_strict) {
       lj_lex_error(ls, 0, LJ_ERR_XTEAL,
 		   "unknown record field, ", strdata(var->teal_field));
@@ -1471,6 +1570,10 @@ static void teal_check_record_field_store(FuncState *fs, ExpDesc *var,
   have.type = fs->teal_shape_ftype[idx];
   have.nilok = fs->teal_shape_fnil[idx];
   teal_check_assign(ls, have, e, "record field type mismatch, ");
+  if (have.type == TEAL_T_FUNCTION && e->teal_sig != 0) {
+    fs->teal_shape_fsig[idx] = e->teal_sig;
+    fs->teal_shape_fsigfs[idx] = e->teal_sigfs ? e->teal_sigfs : fs;
+  }
 }
 
 static int teal_type_end(LexState *ls)
@@ -1652,6 +1755,8 @@ static MSize var_lookup_(FuncState *fs, GCstr *name, ExpDesc *e, int first)
       e->teal_type = fs->teal_vtype[reg];
       e->teal_nil = fs->teal_vnil[reg];
       e->teal_shape = fs->teal_vshape[reg];
+      e->teal_sig = fs->teal_vsig[reg];
+      e->teal_sigfs = fs->teal_vsigfs[reg];
       if (!first)
 	fscope_uvmark(fs, reg);  /* Scope now has an upvalue. */
       return (MSize)(e->u.s.aux = (uint32_t)fs->varmap[reg]);
@@ -2148,12 +2253,25 @@ static void fs_init(LexState *ls, FuncState *fs)
   fs->framesize = 1;  /* Minimum frame size. */
   memset(fs->teal_vtype, 0, sizeof(fs->teal_vtype));
   memset(fs->teal_vnil, 0, sizeof(fs->teal_vnil));
+  memset(fs->teal_vsig, 0, sizeof(fs->teal_vsig));
+  memset(fs->teal_vsigfs, 0, sizeof(fs->teal_vsigfs));
   memset(fs->teal_vshape, 0, sizeof(fs->teal_vshape));
   memset(fs->teal_shapes, 0, sizeof(fs->teal_shapes));
   memset(fs->teal_shape_field, 0, sizeof(fs->teal_shape_field));
   memset(fs->teal_shape_owner, 0, sizeof(fs->teal_shape_owner));
   memset(fs->teal_shape_ftype, 0, sizeof(fs->teal_shape_ftype));
   memset(fs->teal_shape_fnil, 0, sizeof(fs->teal_shape_fnil));
+  memset(fs->teal_shape_fsig, 0, sizeof(fs->teal_shape_fsig));
+  memset(fs->teal_shape_fsigfs, 0, sizeof(fs->teal_shape_fsigfs));
+  memset(fs->teal_sigs, 0, sizeof(fs->teal_sigs));
+  memset(fs->teal_sig_ptype, 0, sizeof(fs->teal_sig_ptype));
+  memset(fs->teal_sig_pnil, 0, sizeof(fs->teal_sig_pnil));
+  memset(fs->teal_paramtype, 0, sizeof(fs->teal_paramtype));
+  memset(fs->teal_paramnil, 0, sizeof(fs->teal_paramnil));
+  memset(fs->teal_paramoptional, 0, sizeof(fs->teal_paramoptional));
+  fs->teal_nsig = 0;
+  fs->teal_nsigparam = 0;
+  fs->teal_nparam = 0;
   fs->teal_nshape = 0;
   fs->teal_nfield = 0;
   fs->teal_rettype = TEAL_T_UNKNOWN;
@@ -2359,9 +2477,13 @@ static BCReg parse_params(LexState *ls, int needself)
   FuncState *fs = ls->fs;
   BCReg nparams = 0;
   TealTypeDesc ptype[LJ_MAX_LOCVAR];
+  uint8_t poptional[LJ_MAX_LOCVAR];
   uint32_t i;
   lex_check(ls, '(');
-  for (i = 0; i < LJ_MAX_LOCVAR; i++) teal_type_unknown(&ptype[i]);
+  for (i = 0; i < LJ_MAX_LOCVAR; i++) {
+    teal_type_unknown(&ptype[i]);
+    poptional[i] = 0;
+  }
   if (needself) {
     var_new_lit(ls, nparams++, "self");
     ptype[0].type = TEAL_T_RECORD;
@@ -2375,8 +2497,10 @@ static BCReg parse_params(LexState *ls, int needself)
 	if (ls->teal && lex_opt(ls, '?'))
 	  optional = 1;
 	ptype[n] = teal_opt_type(ls);
-	if (optional)
+	if (optional) {
 	  ptype[n].nilok = 1;
+	  poptional[n] = 1;
+	}
       } else if (ls->tok == TK_dots) {
 	lj_lex_next(ls);
 	(void)teal_opt_type(ls);
@@ -2391,7 +2515,11 @@ static BCReg parse_params(LexState *ls, int needself)
   for (i = 0; i < nparams; i++) {
     fs->teal_vtype[i] = ptype[i].type;
     fs->teal_vnil[i] = ptype[i].nilok;
+    fs->teal_paramtype[i] = ptype[i].type;
+    fs->teal_paramnil[i] = ptype[i].nilok;
+    fs->teal_paramoptional[i] = poptional[i];
   }
+  fs->teal_nparam = nparams;
   lj_assertFS(fs->nactvar == nparams, "bad regalloc");
   bcreg_reserve(fs, nparams);
   lex_check(ls, ')');
@@ -2407,6 +2535,7 @@ static void parse_body(LexState *ls, ExpDesc *e, int needself, BCLine line)
   FuncState fs, *pfs = ls->fs;
   FuncScope bl;
   GCproto *pt;
+  uint16_t sig;
   ptrdiff_t oldbase = pfs->bcbase - ls->bcstack;
   fs_init(ls, &fs);
   fscope_begin(&fs, &bl, 0);
@@ -2425,11 +2554,14 @@ static void parse_body(LexState *ls, ExpDesc *e, int needself, BCLine line)
   pt = fs_finish(ls, (ls->lastline = ls->linenumber));
   pfs->bcbase = ls->bcstack + oldbase;  /* May have been reallocated. */
   pfs->bclim = (BCPos)(ls->sizebcstack - oldbase);
+  sig = teal_func_sig_new(ls, pfs, &fs);
   /* Store new prototype in the constant array of the parent. */
   expr_init(e, VRELOCABLE,
 	    bcemit_AD(pfs, BC_FNEW, 0, const_gc(pfs, obj2gco(pt), LJ_TPROTO)));
   e->teal_type = TEAL_T_FUNCTION;
   e->teal_nil = 0;
+  e->teal_sig = sig;
+  e->teal_sigfs = sig != 0 ? pfs : NULL;
 #if LJ_HASFFI
   pfs->flags |= (fs.flags & PROTO_FFI);
 #endif
@@ -2454,6 +2586,21 @@ static BCReg expr_list(LexState *ls, ExpDesc *v)
   return n;
 }
 
+static BCReg expr_list_call(LexState *ls, ExpDesc *v, FuncState *sigfs,
+			    uint16_t sig)
+{
+  BCReg n = 1;
+  expr(ls, v);
+  teal_check_call_arg(ls, sigfs, sig, n, v);
+  while (lex_opt(ls, ',')) {
+    expr_tonextreg(ls->fs, v);
+    expr(ls, v);
+    n++;
+    teal_check_call_arg(ls, sigfs, sig, n, v);
+  }
+  return n;
+}
+
 /* Parse function argument list. */
 static void parse_args(LexState *ls, ExpDesc *e)
 {
@@ -2461,7 +2608,12 @@ static void parse_args(LexState *ls, ExpDesc *e)
   ExpDesc args;
   BCIns ins;
   BCReg base;
+  uint16_t sig = e->teal_sig;
+  FuncState *sigfs = e->teal_sigfs;
+  BCReg nargs = 0;
+  int openargs = 0;
   BCLine line = ls->linenumber;
+  if (sig != 0 && sigfs == NULL) sigfs = fs;
   if (ls->tok == '(') {
 #if !LJ_52
     if (line != ls->lastline)
@@ -2471,21 +2623,27 @@ static void parse_args(LexState *ls, ExpDesc *e)
     if (ls->tok == ')') {  /* f(). */
       args.k = VVOID;
     } else {
-      expr_list(ls, &args);
+      nargs = expr_list_call(ls, &args, sigfs, sig);
       if (args.k == VCALL)  /* f(a, b, g()) or f(a, b, ...). */
-	setbc_b(bcptr(fs, &args), 0);  /* Pass on multiple results. */
+	setbc_b(bcptr(fs, &args), 0), openargs = 1;  /* Pass on multiple results. */
     }
     lex_match(ls, ')', '(', line);
   } else if (ls->tok == '{') {
     expr_table(ls, &args);
+    nargs = 1;
+    teal_check_call_arg(ls, sigfs, sig, 1, &args);
   } else if (ls->tok == TK_string) {
     expr_init(&args, VKSTR, 0);
     args.u.sval = strV(&ls->tokval);
+    args.teal_type = TEAL_T_STRING;
     lj_lex_next(ls);
+    nargs = 1;
+    teal_check_call_arg(ls, sigfs, sig, 1, &args);
   } else {
     err_syntax(ls, LJ_ERR_XFUNARG);
     return;  /* Silence compiler. */
   }
+  teal_check_call_arity(ls, sigfs, sig, nargs, openargs);
   lj_assertFS(e->k == VNONRELOC, "bad expr type %d", e->k);
   base = e->u.s.info;  /* Base register for call. */
   if (args.k == VCALL) {
@@ -2497,6 +2655,13 @@ static void parse_args(LexState *ls, ExpDesc *e)
   }
   expr_init(e, VCALL, bcemit_INS(fs, ins));
   e->u.s.aux = base;
+  if (sig != 0) {
+    TealFuncSig *ts = teal_func_sig(sigfs, sig);
+    if (ts != NULL) {
+      e->teal_type = ts->rettype;
+      e->teal_nil = ts->retnil;
+    }
+  }
   fs->bcbase[fs->pc - 1].line = line;
   fs->freereg = base+1;  /* Leave one result by default. */
 }
@@ -2911,7 +3076,7 @@ static void teal_parse_record_body(LexState *ls, uint16_t sid)
 		   "duplicate record field, ", strdata(field));
     teal_type_unknown(&t);
     t = teal_parse_type(ls);
-    (void)teal_record_field_add(ls, sid, field, t);
+    (void)teal_record_field_add(ls, sid, field, t, 0, NULL);
     sawfield = 1;
     (void)lex_opt(ls, ';');
   }
@@ -2938,15 +3103,25 @@ static void parse_local(LexState *ls)
     /* bcemit_store(fs, &v, &b) without setting VSTACK_VAR_RW. */
     expr_free(fs, &b);
     expr_toreg(fs, &b, v.u.s.info);
+    fs->teal_vtype[v.u.s.info] = TEAL_T_FUNCTION;
+    fs->teal_vnil[v.u.s.info] = 0;
+    fs->teal_vsig[v.u.s.info] = b.teal_sig;
+    fs->teal_vsigfs[v.u.s.info] = b.teal_sigfs ? b.teal_sigfs : fs;
     /* The upvalue is in scope, but the local is only valid after the store. */
     var_get(ls, fs, fs->nactvar - 1).startpc = fs->pc;
   } else {  /* Local variable declaration. */
     ExpDesc e;
     BCReg nexps, nvars = 0;
     TealTypeDesc vtype[LJ_MAX_LOCVAR];
+    uint16_t vsig[LJ_MAX_LOCVAR];
+    FuncState *vsigfs[LJ_MAX_LOCVAR];
     BCReg base = ls->fs->nactvar;
     uint32_t i;
-    for (i = 0; i < LJ_MAX_LOCVAR; i++) teal_type_unknown(&vtype[i]);
+    for (i = 0; i < LJ_MAX_LOCVAR; i++) {
+      teal_type_unknown(&vtype[i]);
+      vsig[i] = 0;
+      vsigfs[i] = NULL;
+    }
     do {  /* Collect LHS. */
       BCReg n = nvars++;
       var_new(ls, n, lex_str(ls));
@@ -2968,6 +3143,9 @@ static void parse_local(LexState *ls)
       if (nvars == 1 && nexps == 1 && vtype[0].type == TEAL_T_UNKNOWN) {
 	vtype[0].type = e.teal_type;
 	vtype[0].nilok = e.teal_nil;
+	vsig[0] = e.teal_sig;
+	vsigfs[0] = e.teal_sig != 0 ?
+		    (e.teal_sigfs ? e.teal_sigfs : ls->fs) : NULL;
       }
       if (nvars == 1 && nexps == 1)
 	teal_check_assign(ls, vtype[0], &e, "type mismatch, ");
@@ -2992,6 +3170,8 @@ static void parse_local(LexState *ls)
     for (i = 0; i < nvars; i++) {
       ls->fs->teal_vtype[base+i] = vtype[i].type;
       ls->fs->teal_vnil[base+i] = vtype[i].nilok;
+      ls->fs->teal_vsig[base+i] = vsig[i];
+      ls->fs->teal_vsigfs[base+i] = vsigfs[i];
     }
   }
 }

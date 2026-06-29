@@ -17,6 +17,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" -t strict=off strict_cli_off.tl
 "$LUAJIT" is_primitive.tl
 "$LUAJIT" record_fields.tl
+"$LUAJIT" function_calls.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   echo "as_bad.tl unexpectedly passed" >&2
@@ -47,3 +48,33 @@ if "$LUAJIT" record_field_type_bad.tl >/tmp/tealjit-record-type.out 2>&1; then
   exit 1
 fi
 grep -q "record field type mismatch" /tmp/tealjit-record-type.out
+
+if "$LUAJIT" function_call_arity_bad.tl >/tmp/tealjit-call-arity.out 2>&1; then
+  echo "function_call_arity_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "function arity mismatch" /tmp/tealjit-call-arity.out
+
+if "$LUAJIT" function_call_type_bad.tl >/tmp/tealjit-call-type.out 2>&1; then
+  echo "function_call_type_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "function argument type mismatch" /tmp/tealjit-call-type.out
+
+if "$LUAJIT" function_call_upvalue_type_bad.tl >/tmp/tealjit-call-upvalue-type.out 2>&1; then
+  echo "function_call_upvalue_type_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "function argument type mismatch" /tmp/tealjit-call-upvalue-type.out
+
+if "$LUAJIT" function_call_return_bad.tl >/tmp/tealjit-call-return.out 2>&1; then
+  echo "function_call_return_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-call-return.out
+
+if "$LUAJIT" record_function_call_type_bad.tl >/tmp/tealjit-record-call-type.out 2>&1; then
+  echo "record_function_call_type_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "function argument type mismatch" /tmp/tealjit-record-call-type.out
