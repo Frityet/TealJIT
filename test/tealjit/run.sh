@@ -18,6 +18,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" is_primitive.tl
 "$LUAJIT" record_fields.tl
 "$LUAJIT" function_calls.tl
+"$LUAJIT" function_type_annotations.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   echo "as_bad.tl unexpectedly passed" >&2
@@ -78,3 +79,27 @@ if "$LUAJIT" record_function_call_type_bad.tl >/tmp/tealjit-record-call-type.out
   exit 1
 fi
 grep -q "function argument type mismatch" /tmp/tealjit-record-call-type.out
+
+if "$LUAJIT" function_type_annotation_arg_bad.tl >/tmp/tealjit-ftype-arg.out 2>&1; then
+  echo "function_type_annotation_arg_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "function argument type mismatch" /tmp/tealjit-ftype-arg.out
+
+if "$LUAJIT" function_type_annotation_arity_bad.tl >/tmp/tealjit-ftype-arity.out 2>&1; then
+  echo "function_type_annotation_arity_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "function arity mismatch" /tmp/tealjit-ftype-arity.out
+
+if "$LUAJIT" function_type_annotation_assign_bad.tl >/tmp/tealjit-ftype-assign.out 2>&1; then
+  echo "function_type_annotation_assign_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-ftype-assign.out
+
+if "$LUAJIT" record_function_type_assignment_bad.tl >/tmp/tealjit-record-ftype-assign.out 2>&1; then
+  echo "record_function_type_assignment_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "record field type mismatch" /tmp/tealjit-record-ftype-assign.out
