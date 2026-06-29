@@ -66,6 +66,42 @@ const char *lj_wasmtime_host_status_name(int status) {
   }
 }
 
+int lj_wasmtime_host_validate_jit_module(const LJWasmJITModule *module) {
+  const uint32_t known_flags =
+      LJ_WASM_JIT_F_IR_LOWERED | LJ_WASM_JIT_F_IMPORT_ENV_MEMORY;
+  const uint32_t known_memory_flags =
+      LJ_WASM_JIT_MEMORY_F_64 | LJ_WASM_JIT_MEMORY_F_HAS_MAX;
+
+  if (module == NULL || module->bytes == NULL || module->size == 0 ||
+      module->reserved != 0 || (module->flags & ~known_flags) != 0 ||
+      (module->memory_flags & ~known_memory_flags) != 0) {
+    return LJ_WASM_HOST_ERR;
+  }
+
+  if ((module->flags & LJ_WASM_JIT_F_IMPORT_ENV_MEMORY) == 0) {
+    if (module->memory_min != 0 || module->memory_max != 0 ||
+        module->memory_flags != 0) {
+      return LJ_WASM_HOST_ERR;
+    }
+    return LJ_WASM_HOST_OK;
+  }
+
+  if ((module->memory_flags & LJ_WASM_JIT_MEMORY_F_64) == 0 ||
+      module->memory_min == 0) {
+    return LJ_WASM_HOST_ERR;
+  }
+
+  if ((module->memory_flags & LJ_WASM_JIT_MEMORY_F_HAS_MAX) != 0) {
+    if (module->memory_max < module->memory_min) {
+      return LJ_WASM_HOST_ERR;
+    }
+  } else if (module->memory_max != 0) {
+    return LJ_WASM_HOST_ERR;
+  }
+
+  return LJ_WASM_HOST_OK;
+}
+
 int lj_wasm_import_ffi_load(const char *name, int global,
                             LJWasmHostHandle *handle) {
   if (handle != NULL) {
@@ -153,8 +189,8 @@ int lj_wasm_import_jit_compile(const LJWasmJITModule *module,
   if (handle != NULL) {
     *handle = NULL;
   }
-  if (module == NULL || module->bytes == NULL || module->size == 0 ||
-      handle == NULL) {
+  if (handle == NULL ||
+      lj_wasmtime_host_validate_jit_module(module) != LJ_WASM_HOST_OK) {
     return LJ_WASM_HOST_ERR;
   }
   if (lj_wasmtime_hooks.jit_compile != NULL) {

@@ -148,6 +148,7 @@ int main(void) {
   int fake_cts;
   int fake_ct;
   int fake_cc;
+  LJWasmJITModule bad_module;
 
   memset(&module, 0, sizeof(module));
   module.bytes = module_bytes;
@@ -164,6 +165,40 @@ int main(void) {
   assert(strcmp(lj_wasmtime_host_status_name(LJ_WASM_HOST_NYI),
                 "not-yet-implemented") == 0);
   assert(strcmp(lj_wasmtime_host_status_name(1234), "unknown") == 0);
+  assert(lj_wasmtime_host_validate_jit_module(&module) == LJ_WASM_HOST_OK);
+
+  bad_module = module;
+  bad_module.flags &= ~LJ_WASM_JIT_F_IMPORT_ENV_MEMORY;
+  assert(lj_wasmtime_host_validate_jit_module(&bad_module) ==
+         LJ_WASM_HOST_ERR);
+  assert(lj_wasm_import_jit_compile(&bad_module, &handle) ==
+         LJ_WASM_HOST_ERR);
+  assert(handle == NULL);
+
+  bad_module = module;
+  bad_module.memory_flags = 0;
+  assert(lj_wasmtime_host_validate_jit_module(&bad_module) ==
+         LJ_WASM_HOST_ERR);
+
+  bad_module = module;
+  bad_module.memory_flags =
+      LJ_WASM_JIT_MEMORY_F_64 | LJ_WASM_JIT_MEMORY_F_HAS_MAX;
+  bad_module.memory_max = 0;
+  assert(lj_wasmtime_host_validate_jit_module(&bad_module) ==
+         LJ_WASM_HOST_ERR);
+
+  bad_module = module;
+  bad_module.reserved = 1;
+  assert(lj_wasmtime_host_validate_jit_module(&bad_module) ==
+         LJ_WASM_HOST_ERR);
+
+  bad_module = module;
+  bad_module.flags = 0;
+  bad_module.memory_min = 0;
+  bad_module.memory_max = 0;
+  bad_module.memory_flags = 0;
+  assert(lj_wasmtime_host_validate_jit_module(&bad_module) ==
+         LJ_WASM_HOST_OK);
 
   assert(lj_wasm_import_jit_compile(NULL, &handle) == LJ_WASM_HOST_ERR);
   assert(handle == NULL);

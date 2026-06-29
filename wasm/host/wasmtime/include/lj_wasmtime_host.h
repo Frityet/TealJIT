@@ -125,6 +125,7 @@ extern const size_t lj_wasmtime_host_import_count;
 void lj_wasmtime_host_set_hooks(const LJWasmtimeHostHooks *hooks);
 void lj_wasmtime_host_clear_hooks(void);
 const char *lj_wasmtime_host_status_name(int status);
+int lj_wasmtime_host_validate_jit_module(const LJWasmJITModule *module);
 
 int lj_wasm_import_ffi_load(const char *name, int global,
                             LJWasmHostHandle *handle);
