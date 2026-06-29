@@ -91,7 +91,7 @@ enum {
 typedef struct {
   lua_Number fpr[RID_NUM_FPR];	/* Floating-point locals. */
   intptr_t gpr[RID_NUM_GPR];	/* Integer/reference locals. */
-  int64_t spill[256];		/* Spill slots. */
+  int32_t spill[256];		/* Spill slots. */
 } ExitState;
 
 /* Highest exit + 1 indicates stack check. */

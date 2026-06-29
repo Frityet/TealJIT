@@ -393,6 +393,9 @@ LJLIB_CF(jit_util_traceexitstub)
     return 1;
   }
 #else
+#if LJ_TARGET_WASM
+  UNUSED(L);  /* No native exit-stub address before the WASM VM/JIT backend. */
+#else
   if (L->top > L->base+1) {  /* Don't throw for one-argument variant. */
     GCtrace *T = jit_checktrace(L);
     ExitNo exitno = (ExitNo)lj_lib_checkint(L, 2);
@@ -402,6 +405,7 @@ LJLIB_CF(jit_util_traceexitstub)
       return 1;
     }
   }
+#endif
 #endif
   return 0;
 }
@@ -689,6 +693,10 @@ static uint32_t jit_cpudetect(void)
 
   /* No optional CPU features to detect (for now). */
 
+#elif LJ_TARGET_WASM
+
+  /* No optional CPU features to detect (for now). */
+
 #elif LJ_TARGET_PPC
 
 #if LJ_ARCH_SQRT
@@ -766,4 +774,3 @@ LUALIB_API int luaopen_jit(lua_State *L)
   L->top -= 2;
   return 1;
 }
-

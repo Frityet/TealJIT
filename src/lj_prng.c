@@ -106,6 +106,11 @@ typedef BOOLEAN (WINAPI *PRGR)(void *buf, ULONG len);
 static PRGR libfunc_rgr;
 #endif
 
+#elif LJ_TARGET_WASM
+
+#include <stddef.h>
+#include <sys/random.h>
+
 #elif LJ_TARGET_POSIX
 
 #if LJ_TARGET_LINUX
@@ -203,6 +208,11 @@ int LJ_FASTCALL lj_prng_seed_secure(PRNGState *rs)
   if (libfunc_rgr(rs->u, (ULONG)sizeof(rs->u)))
     goto ok;
 
+#elif LJ_TARGET_WASM
+
+  if (getentropy(rs->u, sizeof(rs->u)) == 0)
+    goto ok;
+
 #elif LJ_TARGET_POSIX
 
 #if LJ_TARGET_LINUX && defined(SYS_getrandom)
@@ -256,4 +266,3 @@ ok:
 }
 
 #endif
-

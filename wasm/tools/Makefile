@@ -8,11 +8,8 @@ WASM64_CFLAGS ?= -sMEMORY64=1 -std=c99 -Wall -Wextra -Werror -I$(SRC)
 LDLIBS ?= -lm -ldl
 OUT ?= /tmp/lj-wasm-nyi-trace.wasm
 WASM64_CHECK_DIR ?= /tmp/lj-wasm64-support-check
-WASM64_SUPPORT_SRC := \
-	lj_wasm_emit.c \
-	lj_wasm_host.c \
-	lj_wasm_jit.c \
-	lj_vm_wasm.c
+WASM64_SKIP_SRC := luajit.c ljamalg.c lj_asm.c lj_mcode.c lj_gdbjit.c
+WASM64_CORE_SRC := $(filter-out $(WASM64_SKIP_SRC),$(notdir $(wildcard $(SRC)/*.c)))
 
 .PHONY: check trace-module-check wasm64-support-check clean
 
@@ -28,7 +25,7 @@ trace-module-check: wasm_nyi_trace_module
 
 wasm64-support-check:
 	mkdir -p $(WASM64_CHECK_DIR)
-	for file in $(WASM64_SUPPORT_SRC); do \
+	for file in $(WASM64_CORE_SRC); do \
 	  $(EMCC) $(WASM64_CFLAGS) -c $(SRC)/$$file -o $(WASM64_CHECK_DIR)/$${file%.c}.o; \
 	done
 
