@@ -7,6 +7,9 @@
 #define _LJ_VM_WASM_H
 
 #include "lj_obj.h"
+#if LJ_HASJIT
+#include "lj_jit.h"
+#endif
 
 typedef enum LJWasmVMSymbolKind {
   LJ_WASM_VM_FUNC,
@@ -25,5 +28,9 @@ typedef struct LJWasmVMSymbol {
 
 LJ_FUNC const LJWasmVMSymbol *lj_vm_wasm_symbols(MSize *count);
 LJ_FUNC const char *lj_vm_wasm_symbol_kind_name(LJWasmVMSymbolKind kind);
+#if LJ_HASJIT
+LJ_FUNC int lj_vm_wasm_trace_enter(lua_State *L, TValue *base,
+				   TraceNo traceno);
+#endif
 
 #endif

@@ -13,7 +13,7 @@ WASM64_CHECK_DIR ?= /tmp/lj-wasm64-support-check
 WASM64_SKIP_SRC :=
 WASM64_CORE_SRC := $(filter-out $(WASM64_SKIP_SRC),$(notdir $(wildcard $(SRC)/*.c)))
 
-.PHONY: check trace-module-check trace-ir-module-check wasm64-support-check clean
+.PHONY: check trace-module-check trace-ir-module-check trace-enter-contract-check wasm64-support-check clean
 
 wasm_nyi_trace_module: wasm_nyi_trace_module.c $(SRC)/libluajit.a
 	$(CC) $(CFLAGS) -o $@ wasm_nyi_trace_module.c $(SRC)/libluajit.a $(LDLIBS)
@@ -21,7 +21,10 @@ wasm_nyi_trace_module: wasm_nyi_trace_module.c $(SRC)/libluajit.a
 wasm_trace_ir_module: wasm_trace_ir_module.c $(SRC)/libluajit.a
 	$(CC) $(CFLAGS) -o $@ wasm_trace_ir_module.c $(SRC)/libluajit.a $(LDLIBS)
 
-check: trace-module-check trace-ir-module-check wasm64-support-check
+wasm_trace_enter_contract: wasm_trace_enter_contract.c $(SRC)/libluajit.a
+	$(CC) $(CFLAGS) -o $@ wasm_trace_enter_contract.c $(SRC)/libluajit.a $(LDLIBS)
+
+check: trace-module-check trace-ir-module-check trace-enter-contract-check wasm64-support-check
 
 trace-module-check: wasm_nyi_trace_module
 	./wasm_nyi_trace_module > $(OUT)
@@ -35,6 +38,9 @@ trace-ir-module-check: wasm_trace_ir_module
 	$(LLVM_OBJDUMP) -h $(OUT_IR) >/dev/null
 	$(WASM_VALIDATE) $(OUT_IR)
 
+trace-enter-contract-check: wasm_trace_enter_contract
+	./wasm_trace_enter_contract
+
 wasm64-support-check:
 	mkdir -p $(WASM64_CHECK_DIR)
 	for file in $(WASM64_CORE_SRC); do \
@@ -44,4 +50,4 @@ wasm64-support-check:
 	done
 
 clean:
-	rm -f wasm_nyi_trace_module wasm_trace_ir_module
+	rm -f wasm_nyi_trace_module wasm_trace_ir_module wasm_trace_enter_contract

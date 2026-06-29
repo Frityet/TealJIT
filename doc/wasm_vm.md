@@ -25,9 +25,17 @@ must provide or intentionally route through C/host support:
 - number helpers: `lj_vm_num2int_check`, `lj_vm_num2i64`,
   `lj_vm_num2u64`, `lj_vm_tobit`
 - bytecode offset base: `lj_vm_asm_begin`
+- WASM trace entry contract: `lj_vm_wasm_trace_enter`
 
 Some math helpers can use C/libm on WASM (`floor`, `ceil`, `trunc`) instead of
 assembly stubs.
+
+`lj_vm_wasm_trace_enter(lua_State *L, TValue *base, TraceNo traceno)` is the
+current C-level contract for the future WASM `BC_JLOOP` dispatch path. It looks
+up `GCtrace->wasmjit`, sets `L->base`, `jit_base`, and the trace vmstate, calls
+`lj_wasm_host_jit_enter(handle, L, base, 0)`, and restores interpreter state
+when the host export returns. The generated WASM VM should call this helper
+rather than treating `GCtrace->mcode` as executable code.
 
 ## Backend Options
 
