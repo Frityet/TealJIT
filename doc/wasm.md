@@ -15,8 +15,9 @@ policy is:
 ## Current State
 
 The repository has target metadata for `wasm64`, a WASM target ABI header, and a
-host integration API in `src/lj_wasm_host.h`. The real VM/JIT backend is still
-gated in `src/Makefile` until these pieces exist:
+host integration API in `src/lj_wasm_host.h`. `doc/wasm_vm.md` tracks the VM
+entry surface that must be implemented. The real VM/JIT backend is still gated
+in `src/Makefile` until these pieces exist:
 
 - `src/vm_wasm64.dasc` or an equivalent build path for the VM entry points.
 - A WebAssembly encoder/buildvm path.
