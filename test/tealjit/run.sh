@@ -20,6 +20,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" function_calls.tl
 "$LUAJIT" function_type_annotations.tl
 "$LUAJIT" record_method_colon_call.tl
+"$LUAJIT" type_aliases.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   echo "as_bad.tl unexpectedly passed" >&2
@@ -104,6 +105,54 @@ if "$LUAJIT" record_function_type_assignment_bad.tl >/tmp/tealjit-record-ftype-a
   exit 1
 fi
 grep -q "record field type mismatch" /tmp/tealjit-record-ftype-assign.out
+
+if "$LUAJIT" type_alias_primitive_bad.tl >/tmp/tealjit-alias-primitive.out 2>&1; then
+  echo "type_alias_primitive_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-alias-primitive.out
+
+if "$LUAJIT" type_alias_nil_bad.tl >/tmp/tealjit-alias-nil.out 2>&1; then
+  echo "type_alias_nil_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "strict nil safety" /tmp/tealjit-alias-nil.out
+
+if "$LUAJIT" type_alias_function_call_bad.tl >/tmp/tealjit-alias-fcall.out 2>&1; then
+  echo "type_alias_function_call_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "function argument type mismatch" /tmp/tealjit-alias-fcall.out
+
+if "$LUAJIT" type_alias_param_bad.tl >/tmp/tealjit-alias-param.out 2>&1; then
+  echo "type_alias_param_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "function argument type mismatch" /tmp/tealjit-alias-param.out
+
+if "$LUAJIT" type_alias_function_assign_bad.tl >/tmp/tealjit-alias-fassign.out 2>&1; then
+  echo "type_alias_function_assign_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-alias-fassign.out
+
+if "$LUAJIT" type_alias_record_field_bad.tl >/tmp/tealjit-alias-record.out 2>&1; then
+  echo "type_alias_record_field_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "record field type mismatch" /tmp/tealjit-alias-record.out
+
+if "$LUAJIT" type_alias_duplicate_bad.tl >/tmp/tealjit-alias-duplicate.out 2>&1; then
+  echo "type_alias_duplicate_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "duplicate type alias" /tmp/tealjit-alias-duplicate.out
+
+if "$LUAJIT" type_alias_builtin_bad.tl >/tmp/tealjit-alias-builtin.out 2>&1; then
+  echo "type_alias_builtin_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type alias shadows builtin" /tmp/tealjit-alias-builtin.out
 
 if "$LUAJIT" record_method_colon_arg_bad.tl >/tmp/tealjit-method-arg.out 2>&1; then
   echo "record_method_colon_arg_bad.tl unexpectedly passed" >&2

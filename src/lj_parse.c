@@ -99,6 +99,7 @@ typedef struct TealTypeDesc {
 
 #define TEAL_MAX_RECORD_FIELDS	512
 #define TEAL_MAX_FUNC_PARAMS	512
+#define TEAL_MAX_TYPE_ALIASES	512
 
 typedef struct TealFuncSig {
   uint16_t first;
@@ -153,6 +154,7 @@ static int expr_numiszero(ExpDesc *e)
 typedef struct FuncScope {
   struct FuncScope *prev;	/* Link to outer scope. */
   MSize vstart;			/* Start of block-local variables. */
+  uint16_t teal_nalias;		/* Active Teal aliases outside the scope. */
   uint8_t nactvar;		/* Number of active vars outside the scope. */
   uint8_t flags;		/* Scope flags. */
 } FuncScope;
@@ -213,8 +215,11 @@ struct FuncState {
   TealFuncSig teal_sigs[LJ_MAX_LOCVAR];
   uint8_t teal_sig_ptype[TEAL_MAX_FUNC_PARAMS];
   uint8_t teal_sig_pnil[TEAL_MAX_FUNC_PARAMS];
+  GCstr *teal_alias_name[TEAL_MAX_TYPE_ALIASES];
+  TealTypeDesc teal_alias_type[TEAL_MAX_TYPE_ALIASES];
   uint16_t teal_nsig;
   uint16_t teal_nsigparam;
+  uint16_t teal_nalias;
   uint8_t teal_paramtype[LJ_MAX_LOCVAR];
   uint8_t teal_paramnil[LJ_MAX_LOCVAR];
   uint8_t teal_paramoptional[LJ_MAX_LOCVAR];
@@ -1205,7 +1210,7 @@ static void teal_type_unknown(TealTypeDesc *td)
   td->sigfs = NULL;
 }
 
-static void teal_type_from_name(TealTypeDesc *td, GCstr *s)
+static int teal_type_builtin_from_name(TealTypeDesc *td, GCstr *s)
 {
   const char *p = strdata(s);
   size_t len = s->len;
@@ -1218,7 +1223,33 @@ static void teal_type_from_name(TealTypeDesc *td, GCstr *s)
   else if (len == 7 && memcmp(p, "boolean", 7) == 0) td->type = TEAL_T_BOOLEAN;
   else if (len == 6 && memcmp(p, "thread", 6) == 0) td->type = TEAL_T_THREAD;
   else if (len == 8 && memcmp(p, "userdata", 8) == 0) td->type = TEAL_T_USERDATA;
-  else td->type = TEAL_T_RECORD;
+  else return 0;
+  return 1;
+}
+
+static int teal_alias_lookup(FuncState *fs, GCstr *s, TealTypeDesc *td)
+{
+  while (fs != NULL) {
+    int32_t i;
+    for (i = (int32_t)fs->teal_nalias - 1; i >= 0; i--) {
+      if (fs->teal_alias_name[i] == s) {
+	*td = fs->teal_alias_type[i];
+	return 1;
+      }
+    }
+    fs = fs->prev;
+  }
+  return 0;
+}
+
+static void teal_type_from_name(LexState *ls, TealTypeDesc *td, GCstr *s)
+{
+  if (teal_type_builtin_from_name(td, s))
+    return;
+  if (ls->teal && teal_alias_lookup(ls->fs, s, td))
+    return;
+  teal_type_unknown(td);
+  td->type = TEAL_T_RECORD;
 }
 
 static const char *teal_type_name(uint8_t t)
@@ -1748,7 +1779,7 @@ static TealTypeDesc teal_parse_type_tail(LexState *ls, TealTypeDesc td);
 static TealTypeDesc teal_parse_type_after_name(LexState *ls, GCstr *name)
 {
   TealTypeDesc td;
-  teal_type_from_name(&td, name);
+  teal_type_from_name(ls, &td, name);
   return teal_parse_type_tail(ls, td);
 }
 
@@ -1833,7 +1864,7 @@ static TealTypeDesc teal_parse_type_tail(LexState *ls, TealTypeDesc td)
       break;
     if (ls->tok == TK_name || (!LJ_52 && ls->tok == TK_goto)) {
       TealTypeDesc part;
-      teal_type_from_name(&part, strV(&ls->tokval));
+      teal_type_from_name(ls, &part, strV(&ls->tokval));
       teal_type_merge(&td, part);
       lj_lex_next(ls);
       if (depth == 0 && ls->tok == TK_name)
@@ -2141,6 +2172,7 @@ static VarInfo *gola_findlabel(LexState *ls, GCstr *name)
 static void fscope_begin(FuncState *fs, FuncScope *bl, int flags)
 {
   bl->nactvar = (uint8_t)fs->nactvar;
+  bl->teal_nalias = fs->teal_nalias;
   bl->flags = flags;
   bl->vstart = fs->ls->vtop;
   bl->prev = fs->bl;
@@ -2154,6 +2186,7 @@ static void fscope_end(FuncState *fs)
   FuncScope *bl = fs->bl;
   LexState *ls = fs->ls;
   fs->bl = bl->prev;
+  fs->teal_nalias = bl->teal_nalias;
   var_remove(ls, bl->nactvar);
   fs->freereg = fs->nactvar;
   lj_assertFS(bl->nactvar == fs->nactvar, "bad regalloc");
@@ -2502,11 +2535,14 @@ static void fs_init(LexState *ls, FuncState *fs)
   memset(fs->teal_sigs, 0, sizeof(fs->teal_sigs));
   memset(fs->teal_sig_ptype, 0, sizeof(fs->teal_sig_ptype));
   memset(fs->teal_sig_pnil, 0, sizeof(fs->teal_sig_pnil));
+  memset(fs->teal_alias_name, 0, sizeof(fs->teal_alias_name));
+  memset(fs->teal_alias_type, 0, sizeof(fs->teal_alias_type));
   memset(fs->teal_paramtype, 0, sizeof(fs->teal_paramtype));
   memset(fs->teal_paramnil, 0, sizeof(fs->teal_paramnil));
   memset(fs->teal_paramoptional, 0, sizeof(fs->teal_paramoptional));
   fs->teal_nsig = 0;
   fs->teal_nsigparam = 0;
+  fs->teal_nalias = 0;
   fs->teal_nparam = 0;
   fs->teal_nshape = 0;
   fs->teal_nfield = 0;
@@ -3298,8 +3334,35 @@ static void parse_teal_global_record(LexState *ls)
 static int parse_teal_typeonly_stmt(LexState *ls)
 {
   if (lex_optteal(ls, "type")) {
-    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
-		 "type aliases are not wired into the native checker yet, ", "");
+    FuncState *fs = ls->fs;
+    TealTypeDesc t, builtin;
+    GCstr *name = lex_str(ls);
+    uint16_t base = fs->bl ? fs->bl->teal_nalias : 0;
+    uint16_t i;
+    name = lj_parse_keepstr(ls, strdata(name), name->len);
+    if (teal_type_builtin_from_name(&builtin, name))
+      lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		   "type alias shadows builtin, ", strdata(name));
+    for (i = base; i < fs->teal_nalias; i++) {
+      if (fs->teal_alias_name[i] == name)
+	lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		     "duplicate type alias, ", strdata(name));
+    }
+    if (ls->tok == '<')
+      lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		   "generic type aliases are not wired into the native checker yet, ",
+		   strdata(name));
+    lex_check(ls, '=');
+    t = teal_parse_type(ls);
+    if (t.type == TEAL_T_UNKNOWN)
+      lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		   "type alias needs a type, ", strdata(name));
+    if (fs->teal_nalias >= TEAL_MAX_TYPE_ALIASES)
+      lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many type aliases, ", "");
+    fs->teal_alias_name[fs->teal_nalias] = name;
+    fs->teal_alias_type[fs->teal_nalias] = t;
+    fs->teal_nalias++;
+    return 1;
   }
   if (lex_optteal(ls, "interface") || lex_optteal(ls, "enum")) {
     teal_skip_type_decl(ls);
@@ -3851,6 +3914,8 @@ static int parse_stmt(LexState *ls)
     if (lex_optteal(ls, "global")) {
       if (lex_optteal(ls, "record"))
 	parse_teal_global_record(ls);
+      else if (parse_teal_typeonly_stmt(ls))
+	break;
       else
 	lj_lex_error(ls, 0, LJ_ERR_XTEAL,
 		     "unsupported global declaration, ", "");
