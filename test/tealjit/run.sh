@@ -15,6 +15,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 
 "$LUAJIT" strict_off_nil.tl
 "$LUAJIT" -t strict=off strict_cli_off.tl
+"$LUAJIT" strict_nil_refine.tl
 "$LUAJIT" is_primitive.tl
 "$LUAJIT" is_union.tl
 "$LUAJIT" record_fields.tl
@@ -35,6 +36,24 @@ if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   exit 1
 fi
 grep -q "invalid strict cast" /tmp/tealjit-as-bad.out
+
+if "$LUAJIT" assert_type_bad.tl >/tmp/tealjit-assert-type.out 2>&1; then
+  echo "assert_type_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-assert-type.out
+
+if "$LUAJIT" or_type_bad.tl >/tmp/tealjit-or-type.out 2>&1; then
+  echo "or_type_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-or-type.out
+
+if "$LUAJIT" or_fallback_type_bad.tl >/tmp/tealjit-or-fallback-type.out 2>&1; then
+  echo "or_fallback_type_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-or-fallback-type.out
 
 if "$LUAJIT" is_name_only_bad.tl >/tmp/tealjit-is-name-only.out 2>&1; then
   echo "is_name_only_bad.tl unexpectedly passed" >&2

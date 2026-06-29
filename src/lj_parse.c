@@ -147,6 +147,9 @@ typedef struct TealTypeDesc {
 #define TEAL_ITER_PAIRS		2
 #define TEAL_ITER_NEXT		3
 
+#define TEAL_BUILTIN_NONE	0
+#define TEAL_BUILTIN_ASSERT	1
+
 typedef struct TealFuncSig {
   uint16_t first;
   uint8_t nparam;
@@ -1539,6 +1542,13 @@ static uint8_t teal_builtin_iter_kind(GCstr *name)
   return TEAL_ITER_NONE;
 }
 
+static uint8_t teal_builtin_call_kind(GCstr *name)
+{
+  if (name->len == 6 && memcmp(strdata(name), "assert", 6) == 0)
+    return TEAL_BUILTIN_ASSERT;
+  return TEAL_BUILTIN_NONE;
+}
+
 static void teal_apply_builtin_iter(LexState *ls, ExpDesc *e, uint8_t kind,
 				    ExpDesc *arg)
 {
@@ -2801,6 +2811,66 @@ static void teal_type_merge_unchecked(LexState *ls, TealTypeDesc *td,
 				      TealTypeDesc part)
 {
   teal_type_merge_(ls, td, part, 0);
+}
+
+static TealTypeDesc teal_type_non_nil(TealTypeDesc t)
+{
+  t.nilok = 0;
+  return t;
+}
+
+static int teal_type_maybe_falsy(TealTypeDesc t)
+{
+  if (t.type == TEAL_T_UNKNOWN || t.type == TEAL_T_ANY ||
+      t.type == TEAL_T_NIL || t.type == TEAL_T_BOOLEAN || t.nilok)
+    return 1;
+  if (t.type == TEAL_T_UNION) {
+    TealUnionType *tu = teal_union_type(t.tabfs, t.tab);
+    uint16_t i;
+    if (tu == NULL)
+      return 1;
+    for (i = 0; i < tu->count; i++) {
+      TealTypeDesc part = t.tabfs->teal_union_parts[tu->first+i];
+      if (part.type == TEAL_T_BOOLEAN || part.type == TEAL_T_NIL ||
+	  part.nilok)
+	return 1;
+    }
+  }
+  return 0;
+}
+
+static int teal_type_has_truthy_value(TealTypeDesc t)
+{
+  if (t.type == TEAL_T_NIL)
+    return 0;
+  return t.type != TEAL_T_UNKNOWN;
+}
+
+static void teal_or_result_type(LexState *ls, TealTypeDesc left,
+				TealTypeDesc right, TealTypeDesc *out)
+{
+  int fallback = teal_type_maybe_falsy(left);
+  int leftval = teal_type_has_truthy_value(left);
+  if (left.type == TEAL_T_UNKNOWN ||
+      (fallback && right.type == TEAL_T_UNKNOWN)) {
+    teal_type_unknown(out);
+    return;
+  }
+  if (left.type == TEAL_T_ANY || (fallback && right.type == TEAL_T_ANY)) {
+    teal_type_unknown(out);
+    out->type = TEAL_T_ANY;
+    return;
+  }
+  if (!fallback) {
+    *out = teal_type_non_nil(left);
+    return;
+  }
+  if (!leftval) {
+    *out = right;
+    return;
+  }
+  *out = teal_type_non_nil(left);
+  teal_type_merge_unchecked(ls, out, right);
 }
 
 static TealTypeDesc teal_parse_type_tail(LexState *ls, TealTypeDesc td);
@@ -4142,11 +4212,13 @@ static BCReg expr_list_for_iter(LexState *ls, ExpDesc *v)
   return n;
 }
 
-static BCReg expr_list_call(LexState *ls, ExpDesc *v, FuncState *sigfs,
-			    uint16_t sig, BCReg argbase)
+static BCReg expr_list_call(LexState *ls, ExpDesc *v, ExpDesc *first,
+			    FuncState *sigfs, uint16_t sig, BCReg argbase)
 {
   BCReg n = 1;
   expr(ls, v);
+  if (first != NULL)
+    *first = *v;
   teal_check_call_arg(ls, sigfs, sig, (BCReg)(argbase+n), v);
   while (lex_opt(ls, ',')) {
     expr_tonextreg(ls->fs, v);
@@ -4159,10 +4231,11 @@ static BCReg expr_list_call(LexState *ls, ExpDesc *v, FuncState *sigfs,
 
 /* Parse function argument list. */
 static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args,
-		       uint8_t builtin_iter)
+		       uint8_t builtin_iter, uint8_t builtin_call)
 {
   FuncState *fs = ls->fs;
   ExpDesc args;
+  ExpDesc firstarg;
   ExpDesc iterarg;
   BCIns ins;
   BCReg base;
@@ -4171,7 +4244,9 @@ static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args,
   BCReg nargs = 0;
   int openargs = 0;
   int have_iterarg = 0;
+  int have_firstarg = 0;
   BCLine line = ls->linenumber;
+  expr_init(&firstarg, VVOID, 0);
   expr_init(&iterarg, VVOID, 0);
   if (sig != 0 && sigfs == NULL) sigfs = fs;
   if (ls->tok == '(') {
@@ -4183,7 +4258,8 @@ static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args,
     if (ls->tok == ')') {  /* f(). */
       args.k = VVOID;
     } else {
-      nargs = expr_list_call(ls, &args, sigfs, sig, implicit_args);
+      nargs = expr_list_call(ls, &args, &firstarg, sigfs, sig, implicit_args);
+      have_firstarg = 1;
       if (builtin_iter != TEAL_ITER_NONE && nargs == 1) {
 	iterarg = args;
 	have_iterarg = 1;
@@ -4195,6 +4271,8 @@ static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args,
   } else if (ls->tok == '{') {
     expr_table(ls, &args);
     nargs = 1;
+    firstarg = args;
+    have_firstarg = 1;
     if (builtin_iter != TEAL_ITER_NONE) {
       iterarg = args;
       have_iterarg = 1;
@@ -4206,6 +4284,8 @@ static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args,
     args.teal_type = TEAL_T_STRING;
     lj_lex_next(ls);
     nargs = 1;
+    firstarg = args;
+    have_firstarg = 1;
     teal_check_call_arg(ls, sigfs, sig, (BCReg)(implicit_args+1), &args);
   } else {
     err_syntax(ls, LJ_ERR_XFUNARG);
@@ -4233,6 +4313,14 @@ static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args,
       e->teal_nil = ts->retnil;
       e->teal_tab = ts->rettab;
       e->teal_tabfs = ts->rettabfs;
+    }
+  }
+  if (builtin_call == TEAL_BUILTIN_ASSERT && have_firstarg) {
+    TealTypeDesc ret = teal_type_non_nil(teal_type_from_expr(fs, &firstarg));
+    teal_expr_set_type(e, ret);
+    if (ret.type == TEAL_T_RECORD) {
+      e->teal_shape = firstarg.teal_shape;
+      e->teal_shapefs = firstarg.teal_shapefs;
     }
   }
   fs->bcbase[fs->pc - 1].line = line;
@@ -4268,13 +4356,15 @@ static void expr_primary(LexState *ls, ExpDesc *v)
       lj_lex_next(ls);
       expr_str(ls, &key);
       bcemit_method(fs, v, &key);
-      parse_args(ls, v, 1, TEAL_ITER_NONE);
+      parse_args(ls, v, 1, TEAL_ITER_NONE, TEAL_BUILTIN_NONE);
     } else if (ls->tok == '(' || ls->tok == TK_string || ls->tok == '{') {
       uint8_t builtin_iter = v->k == VGLOBAL ?
 			     teal_builtin_iter_kind(v->u.sval) : TEAL_ITER_NONE;
+      uint8_t builtin_call = v->k == VGLOBAL ?
+			     teal_builtin_call_kind(v->u.sval) : TEAL_BUILTIN_NONE;
       expr_tonextreg(fs, v);
       if (ls->fr2) bcreg_reserve(fs, 1);
-      parse_args(ls, v, 0, builtin_iter);
+      parse_args(ls, v, 0, builtin_iter, builtin_call);
     } else {
       break;
     }
@@ -4435,10 +4525,20 @@ static BinOpr expr_binop(LexState *ls, ExpDesc *v, uint32_t limit)
       teal_emit_is(ls, v, want);
       nextop = token2binop(ls);
     } else {
+      TealTypeDesc lefttype, righttype, resulttype;
+      int is_or = op == OPR_OR;
+      if (is_or)
+	lefttype = teal_type_from_expr(ls->fs, v);
       bcemit_binop_left(ls->fs, op, v);
       /* Parse binary expression with higher priority. */
       nextop = expr_binop(ls, &v2, priority[op].right);
+      if (is_or)
+	righttype = teal_type_from_expr(ls->fs, &v2);
       bcemit_binop(ls->fs, op, v, &v2);
+      if (is_or) {
+	teal_or_result_type(ls, lefttype, righttype, &resulttype);
+	teal_expr_set_type(v, resulttype);
+      }
     }
     op = nextop;
   }
