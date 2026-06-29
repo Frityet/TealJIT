@@ -1660,6 +1660,26 @@ static int teal_tuple_union_val(LexState *ls, TealTableType *tt, FuncState *fs,
   return seen != 0 && seen == tt->count;
 }
 
+static int teal_table_literal_tuple_candidate(FuncState *fs, uint16_t owner,
+					      uint16_t count)
+{
+  uint8_t seen[TEAL_MAX_TABLE_ENTRIES];
+  uint16_t i, n = 0;
+  if (count <= 1 || count > TEAL_MAX_TABLE_ENTRIES)
+    return 0;
+  memset(seen, 0, sizeof(seen));
+  for (i = 0; i < fs->teal_ntableentry; i++) {
+    TealTableEntry *ent = &fs->teal_table_entries[i];
+    if (ent->owner != owner)
+      continue;
+    if (ent->ikey == 0 || ent->ikey > count || seen[ent->ikey-1])
+      return 0;
+    seen[ent->ikey-1] = 1;
+    n++;
+  }
+  return n == count;
+}
+
 static uint16_t teal_integer_key(ExpDesc *e)
 {
   if (!expr_isnumk(e))
@@ -3758,8 +3778,12 @@ static void expr_table(LexState *ls, ExpDesc *e)
   uint16_t table_first = fs->teal_ntableentry;
   uint16_t table_count = 0;
   uint16_t table_owner = 0;
+  int table_heterogeneous = 0;
+  int table_have_first_val = 0;
+  TealTypeDesc table_first_val;
   teal_type_unknown(&table_key);
   teal_type_unknown(&table_val);
+  teal_type_unknown(&table_first_val);
   if (ls->teal) {
     if (fs->teal_ntableowner == 0x7fff)
       lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many table literals, ", "");
@@ -3793,6 +3817,13 @@ static void expr_table(LexState *ls, ExpDesc *e)
       TealTypeDesc vt = teal_type_from_expr(fs, &val);
       uint16_t ikey = teal_integer_key(&key);
       (void)teal_table_entry_add(ls, fs, table_owner, ikey, kt, vt);
+      if (!table_have_first_val) {
+	table_first_val = vt;
+	table_have_first_val = 1;
+      } else if (!teal_type_desc_assignable(table_first_val, vt) ||
+		 !teal_type_desc_assignable(vt, table_first_val)) {
+	table_heterogeneous = 1;
+      }
       table_count++;
       teal_type_merge_unchecked(ls, &table_key, kt);
       teal_type_merge_unchecked(ls, &table_val, vt);
@@ -3860,6 +3891,8 @@ static void expr_table(LexState *ls, ExpDesc *e)
     lj_gc_check(fs->L);
   }
   if (ls->teal) {
+    int tuple = table_heterogeneous &&
+	teal_table_literal_tuple_candidate(fs, table_owner, table_count);
     if (table_count == 0) {
       table_key.type = TEAL_T_UNKNOWN;
       table_val.type = TEAL_T_UNKNOWN;
@@ -3869,7 +3902,8 @@ static void expr_table(LexState *ls, ExpDesc *e)
     e->teal_type = TEAL_T_TABLE;
     e->teal_nil = 0;
     e->teal_tab = teal_table_type_new(ls, fs, table_key, table_val,
-				      table_first, table_count, table_owner, 0,
+				      table_first, table_count, table_owner,
+				      tuple,
 				      1, table_count == 0);
     e->teal_tabfs = fs;
   }

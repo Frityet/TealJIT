@@ -26,6 +26,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" for_iterators.tl
 "$LUAJIT" for_next_iterators.tl
 "$LUAJIT" tuple_types.tl
+"$LUAJIT" inferred_tuple_literals.tl
 "$LUAJIT" union_types.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
@@ -333,6 +334,18 @@ if "$LUAJIT" tuple_write_oob_bad.tl >/tmp/tealjit-tuple-write-oob.out 2>&1; then
   exit 1
 fi
 grep -q "tuple index out of range" /tmp/tealjit-tuple-write-oob.out
+
+if "$LUAJIT" inferred_tuple_slot_bad.tl >/tmp/tealjit-inferred-tuple-slot.out 2>&1; then
+  echo "inferred_tuple_slot_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-inferred-tuple-slot.out
+
+if "$LUAJIT" inferred_tuple_oob_bad.tl >/tmp/tealjit-inferred-tuple-oob.out 2>&1; then
+  echo "inferred_tuple_oob_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "tuple index out of range" /tmp/tealjit-inferred-tuple-oob.out
 
 if "$LUAJIT" union_value_bad.tl >/tmp/tealjit-union-value.out 2>&1; then
   echo "union_value_bad.tl unexpectedly passed" >&2
