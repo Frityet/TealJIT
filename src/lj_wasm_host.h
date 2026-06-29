@@ -81,7 +81,8 @@ LJ_FUNC int lj_wasm_host_jit_compile(const LJWasmJITModule *module,
 				     LJWasmHostHandle *handle);
 LJ_FUNC void lj_wasm_host_jit_free(LJWasmHostHandle handle);
 LJ_FUNC int lj_wasm_host_jit_enter(LJWasmHostHandle handle, void *lua_state,
-				   void *base, uint32_t exitno);
+				   void *base, void *exit_state,
+				   uint32_t exitno);
 LJ_FUNC int lj_wasm_host_jit_patch_exit(LJWasmHostHandle from,
 					uint32_t exitno,
 					LJWasmHostHandle to);

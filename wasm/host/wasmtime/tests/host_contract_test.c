@@ -32,6 +32,7 @@ typedef struct TestCtx {
   uint32_t last_exitno;
   void *last_lua_state;
   void *last_base;
+  void *last_exit_state;
 } TestCtx;
 
 static int test_ffi_load(void *ud, const char *name, int global,
@@ -115,12 +116,13 @@ static void test_jit_free(void *ud, LJWasmHostHandle handle) {
 }
 
 static int test_jit_enter(void *ud, LJWasmHostHandle handle, void *lua_state,
-                          void *base, uint32_t exitno) {
+                          void *base, void *exit_state, uint32_t exitno) {
   TestCtx *ctx = (TestCtx *)ud;
   assert(handle == &ctx->trace_handle);
   ctx->enter_calls++;
   ctx->last_lua_state = lua_state;
   ctx->last_base = base;
+  ctx->last_exit_state = exit_state;
   ctx->last_exitno = exitno;
   return LJ_WASM_HOST_OK;
 }
@@ -145,6 +147,7 @@ int main(void) {
   LJWasmtimeHostHooks hooks;
   int fake_lua;
   int fake_base;
+  int fake_exit_state;
   int fake_cts;
   int fake_ct;
   int fake_cc;
@@ -204,7 +207,8 @@ int main(void) {
   assert(handle == NULL);
   assert(lj_wasm_import_jit_compile(&module, &handle) == LJ_WASM_HOST_NYI);
   assert(handle == NULL);
-  assert(lj_wasm_import_jit_enter(NULL, &fake_lua, &fake_base, 0) ==
+  assert(lj_wasm_import_jit_enter(NULL, &fake_lua, &fake_base,
+                                  &fake_exit_state, 0) ==
          LJ_WASM_HOST_ERR);
   assert(lj_wasm_import_jit_patch_exit(&fake_lua, 0, NULL) ==
          LJ_WASM_HOST_ERR);
@@ -280,11 +284,13 @@ int main(void) {
   assert(ctx.last_memory_max == 0);
   assert(ctx.last_memory_flags == LJ_WASM_JIT_MEMORY_F_64);
 
-  assert(lj_wasm_import_jit_enter(handle, &fake_lua, &fake_base, 3) ==
+  assert(lj_wasm_import_jit_enter(handle, &fake_lua, &fake_base,
+                                  &fake_exit_state, 3) ==
          LJ_WASM_HOST_OK);
   assert(ctx.enter_calls == 1);
   assert(ctx.last_lua_state == &fake_lua);
   assert(ctx.last_base == &fake_base);
+  assert(ctx.last_exit_state == &fake_exit_state);
   assert(ctx.last_exitno == 3);
 
   assert(lj_wasm_import_jit_patch_exit(handle, 5, &ctx.linked_handle) ==
@@ -296,7 +302,8 @@ int main(void) {
   assert(ctx.free_calls == 1);
 
   lj_wasmtime_host_clear_hooks();
-  assert(lj_wasm_import_jit_enter(handle, &fake_lua, &fake_base, 0) ==
+  assert(lj_wasm_import_jit_enter(handle, &fake_lua, &fake_base,
+                                  &fake_exit_state, 0) ==
          LJ_WASM_HOST_NYI);
   return 0;
 }

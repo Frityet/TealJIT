@@ -14,6 +14,12 @@
 #endif
 #include "lj_wasm_jit.h"
 
+#define WASM_TRACE_PARAM_L		0u
+#define WASM_TRACE_PARAM_BASE		1u
+#define WASM_TRACE_PARAM_EXITSTATE	2u
+#define WASM_TRACE_PARAM_EXITNO		3u
+#define WASM_TRACE_FIRST_LOCAL		4u
+
 static void wasm_sbuf_free(lua_State *L, SBuf *sb)
 {
   if (sb->b)
@@ -34,7 +40,7 @@ static void wasm_build_module(lua_State *L, SBuf *module, const SBuf *body,
 			      int import_memory)
 {
   static const uint8_t entry_params[] = {
-    LJ_WASM_TYPE_I64, LJ_WASM_TYPE_I64, LJ_WASM_TYPE_I32
+    LJ_WASM_TYPE_I64, LJ_WASM_TYPE_I64, LJ_WASM_TYPE_I64, LJ_WASM_TYPE_I32
   };
   static const uint8_t entry_results[] = { LJ_WASM_TYPE_I32 };
   SBuf type, import, func, exp, code;
@@ -84,8 +90,9 @@ static void wasm_build_module(lua_State *L, SBuf *module, const SBuf *body,
 **     (func (export "entry") (param i64 i64 i32) (result i32)
 **       (i32.const -2)))
 **
-** The parameters are reserved for lua_State, base and exit number. Returning
-** NYI lets the host compile/link path be exercised before IR lowering exists.
+** The parameters are reserved for lua_State, base, exit state and exit number.
+** Returning NYI lets the host compile/link path be exercised before IR
+** lowering exists.
 */
 void lj_wasm_jit_build_nyi(lua_State *L, SBuf *module)
 {
@@ -124,12 +131,12 @@ static uint8_t wasm_ir_valtype(IRIns *ir)
 
 static uint32_t wasm_ir_local(IRRef ref)
 {
-  return 3u + (uint32_t)(ref - REF_FIRST);
+  return WASM_TRACE_FIRST_LOCAL + (uint32_t)(ref - REF_FIRST);
 }
 
 static uint32_t wasm_tmp64_local(const GCtrace *T)
 {
-  return 3u + (uint32_t)(T->nins - REF_FIRST);
+  return WASM_TRACE_FIRST_LOCAL + (uint32_t)(T->nins - REF_FIRST);
 }
 
 static uint64_t wasm_gc64_tag(uint32_t itype)
@@ -577,7 +584,7 @@ static int32_t wasm_sload_ofs(IRIns *ir)
 static void wasm_emit_addr_const_add(SBuf *body, int32_t ofs)
 {
   lj_wasm_putu8(body, LJ_WASM_OP_LOCAL_GET);
-  lj_wasm_putu32v(body, 1);  /* Entry parameter: base. */
+  lj_wasm_putu32v(body, WASM_TRACE_PARAM_BASE);
   if (ofs != 0) {
     lj_wasm_putu8(body, LJ_WASM_OP_I64_CONST);
     lj_wasm_puti64v(body, ofs);

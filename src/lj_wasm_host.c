@@ -28,7 +28,8 @@ extern int lj_wasm_import_jit_compile(const LJWasmJITModule *module,
 				      LJWasmHostHandle *handle);
 extern void lj_wasm_import_jit_free(LJWasmHostHandle handle);
 extern int lj_wasm_import_jit_enter(LJWasmHostHandle handle, void *lua_state,
-				    void *base, uint32_t exitno);
+				    void *base, void *exit_state,
+				    uint32_t exitno);
 extern int lj_wasm_import_jit_patch_exit(LJWasmHostHandle from,
 					 uint32_t exitno,
 					 LJWasmHostHandle to);
@@ -84,9 +85,9 @@ void lj_wasm_host_jit_free(LJWasmHostHandle handle)
 }
 
 int lj_wasm_host_jit_enter(LJWasmHostHandle handle, void *lua_state,
-			   void *base, uint32_t exitno)
+			   void *base, void *exit_state, uint32_t exitno)
 {
-  return lj_wasm_import_jit_enter(handle, lua_state, base, exitno);
+  return lj_wasm_import_jit_enter(handle, lua_state, base, exit_state, exitno);
 }
 
 int lj_wasm_host_jit_patch_exit(LJWasmHostHandle from, uint32_t exitno,

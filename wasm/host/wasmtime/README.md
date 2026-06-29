@@ -19,7 +19,7 @@ named `lj_wasm_import_*`.
 | `lj_wasm_import_ffi_callback_free` | Delegates to a hook when present. | Release a callback table/host function handle. |
 | `lj_wasm_import_jit_compile` | Clears output, validates module metadata with `lj_wasmtime_host_validate_jit_module`, delegates, otherwise returns `NYI`. | Decode `LJWasmJITModule`, compile the trace module with Wasmtime, link `env.memory` when `LJ_WASM_JIT_F_IMPORT_ENV_MEMORY` is set, and store a compiled trace handle. |
 | `lj_wasm_import_jit_free` | Delegates to a hook when present. | Drop a compiled trace handle. |
-| `lj_wasm_import_jit_enter` | Validates handle, delegates, otherwise returns `NYI`. | Enter a compiled trace export with guest state/base/exit number. |
+| `lj_wasm_import_jit_enter` | Validates handle, delegates, otherwise returns `NYI`. | Enter a compiled trace export with guest state/base/exit-state pointer/exit number. |
 | `lj_wasm_import_jit_patch_exit` | Validates handles, delegates, otherwise returns `NYI`. | Patch a trace exit continuation from one compiled trace to another. |
 
 ## Files

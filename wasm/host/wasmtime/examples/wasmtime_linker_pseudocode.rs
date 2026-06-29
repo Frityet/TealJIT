@@ -140,9 +140,10 @@ fn register_luajit_host_imports(linker: &mut Linker<HostState>) -> anyhow::Resul
          handle: i64,
          lua_state: i64,
          base: i64,
+         exit_state: i64,
          exitno: i32|
          -> i32 {
-            let _ = (caller, handle, lua_state, base, exitno);
+            let _ = (caller, handle, lua_state, base, exit_state, exitno);
             // TODO: call the compiled trace entry export and translate traps
             // into LuaJIT host status codes.
             NYI

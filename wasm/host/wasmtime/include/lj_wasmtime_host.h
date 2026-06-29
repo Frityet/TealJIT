@@ -92,7 +92,7 @@ typedef int (*LJWasmtimeJITCompileFn)(void *ctx,
 typedef void (*LJWasmtimeJITFreeFn)(void *ctx, LJWasmHostHandle handle);
 typedef int (*LJWasmtimeJITEnterFn)(void *ctx, LJWasmHostHandle handle,
                                     void *lua_state, void *base,
-                                    uint32_t exitno);
+                                    void *exit_state, uint32_t exitno);
 typedef int (*LJWasmtimeJITPatchExitFn)(void *ctx, LJWasmHostHandle from,
                                         uint32_t exitno,
                                         LJWasmHostHandle to);
@@ -143,7 +143,7 @@ int lj_wasm_import_jit_compile(const LJWasmJITModule *module,
                                LJWasmHostHandle *handle);
 void lj_wasm_import_jit_free(LJWasmHostHandle handle);
 int lj_wasm_import_jit_enter(LJWasmHostHandle handle, void *lua_state,
-                             void *base, uint32_t exitno);
+                             void *base, void *exit_state, uint32_t exitno);
 int lj_wasm_import_jit_patch_exit(LJWasmHostHandle from, uint32_t exitno,
                                   LJWasmHostHandle to);
 

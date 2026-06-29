@@ -48,21 +48,22 @@ def main(argv):
 
     store, memory, entry = instantiate(argv[1])
     base = 1024
+    exit_state = 4096
 
     write_f64(memory, store, base + 0, 0.0)  # accumulator SLOAD #2
     write_f64(memory, store, base + 8, 1.0)  # loop index SLOAD #3
-    ok = i32_result(entry(store, 0, base, 0))
+    ok = i32_result(entry(store, 0, base, exit_state, 0))
     if ok != 2:
         raise SystemExit(f"expected loop guard failure status 2, got {ok}")
 
     write_i32_tvalue(memory, store, base + 0, 0)
-    failed = i32_result(entry(store, 0, base, 0))
+    failed = i32_result(entry(store, 0, base, exit_state, 0))
     if failed != 0:
         raise SystemExit(f"expected numeric guard failure status 0, got {failed}")
 
     write_f64(memory, store, base + 0, 0.0)
     write_f64(memory, store, base + 8, 101.0)
-    failed_limit = i32_result(entry(store, 0, base, 0))
+    failed_limit = i32_result(entry(store, 0, base, exit_state, 0))
     if failed_limit != 1:
         raise SystemExit(
             f"expected first loop guard failure status 1, got {failed_limit}"

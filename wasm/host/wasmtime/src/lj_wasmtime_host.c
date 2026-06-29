@@ -28,7 +28,7 @@ const LJWasmtimeImportSpec lj_wasmtime_host_imports[] = {
     {LJ_WASMTIME_IMPORT_MODULE, LJ_WASMTIME_IMPORT_JIT_FREE,
      "(handle: host_handle) -> void", "Release a compiled trace handle."},
     {LJ_WASMTIME_IMPORT_MODULE, LJ_WASMTIME_IMPORT_JIT_ENTER,
-     "(handle: host_handle, lua_state: guest_ptr, base: guest_ptr, exitno: u32) -> i32",
+     "(handle: host_handle, lua_state: guest_ptr, base: guest_ptr, exit_state: guest_ptr, exitno: u32) -> i32",
      "Enter a compiled trace export."},
     {LJ_WASMTIME_IMPORT_MODULE, LJ_WASMTIME_IMPORT_JIT_PATCH_EXIT,
      "(from: host_handle, exitno: u32, to: host_handle) -> i32",
@@ -207,13 +207,13 @@ void lj_wasm_import_jit_free(LJWasmHostHandle handle) {
 }
 
 int lj_wasm_import_jit_enter(LJWasmHostHandle handle, void *lua_state,
-                             void *base, uint32_t exitno) {
+                             void *base, void *exit_state, uint32_t exitno) {
   if (handle == NULL) {
     return LJ_WASM_HOST_ERR;
   }
   if (lj_wasmtime_hooks.jit_enter != NULL) {
     return lj_wasmtime_hooks.jit_enter(lj_wasmtime_hooks.ctx, handle,
-                                       lua_state, base, exitno);
+                                       lua_state, base, exit_state, exitno);
   }
   return LJ_WASM_HOST_NYI;
 }

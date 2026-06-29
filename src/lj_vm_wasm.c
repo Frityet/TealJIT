@@ -110,6 +110,7 @@ int lj_vm_wasm_trace_enter(lua_State *L, TValue *base, TraceNo traceno)
   jit_State *J = L2J(L);
   global_State *g = J2G(J);
   GCtrace *T;
+  ExitState ex;
   int status;
 
   if (traceno == 0 || traceno >= J->sizetrace)
@@ -124,7 +125,8 @@ int lj_vm_wasm_trace_enter(lua_State *L, TValue *base, TraceNo traceno)
   setmref(g->jit_base, base);
   g->vmstate = (int32_t)traceno;
 
-  status = lj_wasm_host_jit_enter((LJWasmHostHandle)T->wasmjit, L, base, 0);
+  status = lj_wasm_host_jit_enter((LJWasmHostHandle)T->wasmjit, L, base,
+				  &ex, 0);
 
   setmref(g->jit_base, NULL);
   setvmstate(g, INTERP);
