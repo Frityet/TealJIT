@@ -31,6 +31,9 @@
 #include "lj_vmevent.h"
 #include "lj_target.h"
 #include "lj_prng.h"
+#if LJ_TARGET_WASM
+#include "lj_wasm_host.h"
+#endif
 
 /* -- Error handling ------------------------------------------------------ */
 
@@ -178,6 +181,12 @@ void LJ_FASTCALL lj_trace_free(global_State *g, GCtrace *T)
       J->freetrace = T->traceno;
     setgcrefnull(J->trace[T->traceno]);
   }
+#if LJ_TARGET_WASM
+  if (T->wasmjit) {
+    lj_wasm_host_jit_free((LJWasmHostHandle)T->wasmjit);
+    T->wasmjit = NULL;
+  }
+#endif
   lj_mem_free(g, T,
     ((sizeof(GCtrace)+7)&~7) + (T->nins-T->nk)*sizeof(IRIns) +
     T->nsnap*sizeof(SnapShot) + T->nsnapmap*sizeof(SnapEntry));

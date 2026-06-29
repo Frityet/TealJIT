@@ -42,6 +42,12 @@
 #include "lj_serialize.c"
 #include "lj_api.c"
 #include "lj_profile.c"
+#if LJ_TARGET_WASM
+#include "lj_wasm_emit.c"
+#include "lj_wasm_host.c"
+#include "lj_wasm_jit.c"
+#include "lj_vm_wasm.c"
+#endif
 #include "lj_lex.c"
 #include "lj_parse.c"
 #include "lj_bcread.c"
@@ -88,4 +94,3 @@
 #include "lib_ffi.c"
 #include "lib_buffer.c"
 #include "lib_init.c"
-

@@ -265,6 +265,9 @@ typedef struct GCtrace {
   BCIns startins;	/* Original bytecode of starting instruction. */
   MSize szmcode;	/* Size of machine code. */
   MCode *mcode;		/* Start of machine code. */
+#if LJ_TARGET_WASM
+  void *wasmjit;	/* Opaque host handle for compiled Wasm trace. */
+#endif
 #if LJ_ABI_PAUTH
   ASMFunction mcauth;	/* Start of machine code, with ptr auth applied. */
 #endif

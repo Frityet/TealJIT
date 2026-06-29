@@ -8,8 +8,7 @@ WASM64_CFLAGS ?= -sMEMORY64=1 -std=c99 -Wall -Wextra -Werror -I$(SRC)
 LDLIBS ?= -lm -ldl
 OUT ?= /tmp/lj-wasm-nyi-trace.wasm
 WASM64_CHECK_DIR ?= /tmp/lj-wasm64-support-check
-# The amalgam currently follows lj_asm.c into the missing WASM assembler.
-WASM64_SKIP_SRC := ljamalg.c lj_asm.c
+WASM64_SKIP_SRC :=
 WASM64_CORE_SRC := $(filter-out $(WASM64_SKIP_SRC),$(notdir $(wildcard $(SRC)/*.c)))
 
 .PHONY: check trace-module-check wasm64-support-check clean
@@ -27,7 +26,9 @@ trace-module-check: wasm_nyi_trace_module
 wasm64-support-check:
 	mkdir -p $(WASM64_CHECK_DIR)
 	for file in $(WASM64_CORE_SRC); do \
-	  $(EMCC) $(WASM64_CFLAGS) -c $(SRC)/$$file -o $(WASM64_CHECK_DIR)/$${file%.c}.o; \
+	  extra=; \
+	  if test "$$file" = ljamalg.c; then extra="-Wno-unused-function"; fi; \
+	  $(EMCC) $(WASM64_CFLAGS) $$extra -c $(SRC)/$$file -o $(WASM64_CHECK_DIR)/$${file%.c}.o; \
 	done
 
 clean:

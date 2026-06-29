@@ -51,6 +51,7 @@ TREDEF(MCODELM,	"hit mcode limit (retrying)")
 TREDEF(SPILLOV,	"too many spill slots")
 TREDEF(BADRA,	"inconsistent register allocation")
 TREDEF(NYIIR,	"NYI: cannot assemble IR instruction %d")
+TREDEF(WASMJIT, "WebAssembly trace host compiler failed")
 TREDEF(NYIPHI,	"NYI: PHI shuffling too complex")
 TREDEF(NYICOAL,	"NYI: register coalescing too complex")
 

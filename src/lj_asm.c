@@ -31,6 +31,88 @@
 #include "lj_target.h"
 #include "lj_prng.h"
 
+#if LJ_TARGET_WASM
+#include "lj_wasm_jit.h"
+
+static void asm_wasm_trim_nops(GCtrace *T)
+{
+  IRRef nins = T->nins;
+  IRIns *ir = &T->ir[nins-1];
+  if (ir->o == IR_NOP || ir->o == IR_RENAME) {
+    do { ir--; nins--; } while (ir->o == IR_NOP || ir->o == IR_RENAME);
+    T->nins = nins;
+  }
+}
+
+static MCode *asm_wasm_reserve_token(jit_State *J)
+{
+  MCode *lim, *top = lj_mcode_reserve(J, &lim);
+  if (top <= lim)
+    lj_mcode_limiterr(J, 1);
+  *--top = 0;
+  return top;
+}
+
+static LJWasmHostHandle asm_wasm_target_handle(jit_State *J, MCode *target)
+{
+  MSize i;
+  if (target == J->cur.mcode)
+    return (LJWasmHostHandle)J->cur.wasmjit;
+  for (i = 1; i < J->sizetrace; i++) {
+    GCtrace *T = (GCtrace *)gcref(J->trace[i]);
+    if (T && T->mcode == target)
+      return (LJWasmHostHandle)T->wasmjit;
+  }
+  return NULL;
+}
+
+void lj_asm_trace(jit_State *J, GCtrace *T)
+{
+  LJWasmHostHandle handle = NULL;
+  MCode *token;
+  int status;
+  SnapNo i;
+
+  asm_wasm_trim_nops(T);
+  J->curfinal = lj_trace_alloc(J->L, T);
+
+  token = asm_wasm_reserve_token(J);
+  status = lj_wasm_jit_compile_nyi(J->L, T->traceno, &handle);
+  if (status != LJ_WASM_HOST_OK || handle == NULL) {
+    if (handle)
+      lj_wasm_host_jit_free(handle);
+    setintV(&J->errinfo, status);
+    lj_trace_err(J, LJ_TRERR_WASMJIT);
+  }
+
+  T->mcode = token;
+  T->szmcode = 1;
+  T->mcloop = 0;
+  T->wasmjit = handle;
+  J->curfinal->wasmjit = handle;
+  for (i = 0; i < T->nsnap; i++)
+    T->snap[i].mcofs = 0;
+  lj_mcode_sync(T->mcode, T->mcode + T->szmcode);
+}
+
+void lj_asm_patchexit(jit_State *J, GCtrace *T, ExitNo exitno, MCode *target)
+{
+  LJWasmHostHandle from = (LJWasmHostHandle)T->wasmjit;
+  LJWasmHostHandle to = asm_wasm_target_handle(J, target);
+  int status;
+  if (from == NULL || to == NULL) {
+    setintV(&J->errinfo, (int32_t)exitno);
+    lj_trace_err(J, LJ_TRERR_WASMJIT);
+  }
+  status = lj_wasm_host_jit_patch_exit(from, (uint32_t)exitno, to);
+  if (status != LJ_WASM_HOST_OK) {
+    setintV(&J->errinfo, status);
+    lj_trace_err(J, LJ_TRERR_WASMJIT);
+  }
+}
+
+#else
+
 #ifdef LUA_USE_ASSERT
 #include <stdio.h>
 #endif
@@ -2640,4 +2722,5 @@ void lj_asm_trace(jit_State *J, GCtrace *T)
 
 #undef IR
 
+#endif
 #endif
