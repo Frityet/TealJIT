@@ -71,11 +71,19 @@ typedef struct ExpDesc {
   uint8_t teal_nil;	/* Static Teal type includes nil. */
   uint16_t teal_shape;	/* Static Teal record shape for this value. */
   FuncState *teal_shapefs;	/* Function state owning teal_shape. */
+  uint16_t teal_tab;	/* Static Teal table type for this value. */
+  FuncState *teal_tabfs;	/* Function state owning teal_tab. */
   uint16_t teal_sig;	/* Static Teal function signature for this value. */
   FuncState *teal_sigfs;	/* Function state owning teal_sig. */
   uint16_t teal_field_shape;  /* Record shape for indexed field LHS/read. */
   FuncState *teal_field_shapefs;  /* Function state owning teal_field_shape. */
   GCstr *teal_field;	/* Dot-field name for record shape checks. */
+  uint16_t teal_index_tab;  /* Table type for indexed table LHS/read. */
+  FuncState *teal_index_tabfs;  /* Function state owning teal_index_tab. */
+  uint8_t teal_index_keytype;  /* Static key type used for table indexing. */
+  uint8_t teal_index_keynil;  /* Static key type includes nil. */
+  uint16_t teal_index_keytab;  /* Static table key type for table indexing. */
+  FuncState *teal_index_keytabfs;  /* Owner of teal_index_keytab. */
 } ExpDesc;
 
 typedef enum TealType {
@@ -89,7 +97,8 @@ typedef enum TealType {
   TEAL_T_FUNCTION,
   TEAL_T_THREAD,
   TEAL_T_USERDATA,
-  TEAL_T_RECORD
+  TEAL_T_RECORD,
+  TEAL_T_TABLE
 } TealType;
 
 typedef struct TealTypeDesc {
@@ -97,12 +106,16 @@ typedef struct TealTypeDesc {
   uint8_t nilok;
   uint16_t sig;
   FuncState *sigfs;
+  uint16_t tab;
+  FuncState *tabfs;
 } TealTypeDesc;
 
 #define TEAL_MAX_RECORD_FIELDS	512
 #define TEAL_MAX_FUNC_PARAMS	512
 #define TEAL_MAX_TYPE_ALIASES	512
 #define TEAL_MAX_GLOBALS	512
+#define TEAL_MAX_TABLE_TYPES	512
+#define TEAL_MAX_TABLE_ENTRIES	1024
 
 typedef struct TealFuncSig {
   uint16_t first;
@@ -110,7 +123,25 @@ typedef struct TealFuncSig {
   uint8_t minparam;
   uint8_t rettype;
   uint8_t retnil;
+  uint16_t rettab;
+  FuncState *rettabfs;
 } TealFuncSig;
+
+typedef struct TealTableEntry {
+  uint16_t owner;
+  TealTypeDesc key;
+  TealTypeDesc val;
+} TealTableEntry;
+
+typedef struct TealTableType {
+  TealTypeDesc key;
+  TealTypeDesc val;
+  uint16_t first;
+  uint16_t count;
+  uint16_t owner;
+  uint8_t literal;
+  uint8_t open;
+} TealTableType;
 
 typedef struct TealRecordShape {
   BCReg reg;
@@ -141,11 +172,19 @@ static LJ_AINLINE void expr_init(ExpDesc *e, ExpKind k, uint32_t info)
   e->teal_nil = 0;
   e->teal_shape = 0;
   e->teal_shapefs = NULL;
+  e->teal_tab = 0;
+  e->teal_tabfs = NULL;
   e->teal_sig = 0;
   e->teal_sigfs = NULL;
   e->teal_field_shape = 0;
   e->teal_field_shapefs = NULL;
   e->teal_field = NULL;
+  e->teal_index_tab = 0;
+  e->teal_index_tabfs = NULL;
+  e->teal_index_keytype = TEAL_T_UNKNOWN;
+  e->teal_index_keynil = 0;
+  e->teal_index_keytab = 0;
+  e->teal_index_keytabfs = NULL;
 }
 
 /* Check number constant for +-0. */
@@ -211,6 +250,8 @@ struct FuncState {
   FuncState *teal_vsigfs[LJ_MAX_LOCVAR]; /* Owners of local function sigs. */
   uint16_t teal_vshape[LJ_MAX_LOCVAR];	/* Static Teal local record shape. */
   FuncState *teal_vshapefs[LJ_MAX_LOCVAR]; /* Owners of local record shapes. */
+  uint16_t teal_vtab[LJ_MAX_LOCVAR];	/* Static Teal local table type. */
+  FuncState *teal_vtabfs[LJ_MAX_LOCVAR]; /* Owners of local table types. */
   TealRecordShape teal_shapes[LJ_MAX_LOCVAR];	/* Parser-only shapes. */
   GCstr *teal_shape_field[TEAL_MAX_RECORD_FIELDS];
   uint16_t teal_shape_owner[TEAL_MAX_RECORD_FIELDS];
@@ -218,9 +259,15 @@ struct FuncState {
   uint8_t teal_shape_fnil[TEAL_MAX_RECORD_FIELDS];
   uint16_t teal_shape_fsig[TEAL_MAX_RECORD_FIELDS];
   FuncState *teal_shape_fsigfs[TEAL_MAX_RECORD_FIELDS];
+  uint16_t teal_shape_ftab[TEAL_MAX_RECORD_FIELDS];
+  FuncState *teal_shape_ftabfs[TEAL_MAX_RECORD_FIELDS];
   TealFuncSig teal_sigs[LJ_MAX_LOCVAR];
   uint8_t teal_sig_ptype[TEAL_MAX_FUNC_PARAMS];
   uint8_t teal_sig_pnil[TEAL_MAX_FUNC_PARAMS];
+  uint16_t teal_sig_ptab[TEAL_MAX_FUNC_PARAMS];
+  FuncState *teal_sig_ptabfs[TEAL_MAX_FUNC_PARAMS];
+  TealTableType teal_tables[TEAL_MAX_TABLE_TYPES];
+  TealTableEntry teal_table_entries[TEAL_MAX_TABLE_ENTRIES];
   GCstr *teal_alias_name[TEAL_MAX_TYPE_ALIASES];
   TealTypeDesc teal_alias_type[TEAL_MAX_TYPE_ALIASES];
   GCstr *teal_global_name[TEAL_MAX_GLOBALS];
@@ -229,16 +276,23 @@ struct FuncState {
   FuncState *teal_global_shapefs[TEAL_MAX_GLOBALS];
   uint16_t teal_nsig;
   uint16_t teal_nsigparam;
+  uint16_t teal_ntable;
+  uint16_t teal_ntableentry;
+  uint16_t teal_ntableowner;
   uint16_t teal_nalias;
   uint16_t teal_nglobal;
   uint8_t teal_paramtype[LJ_MAX_LOCVAR];
   uint8_t teal_paramnil[LJ_MAX_LOCVAR];
+  uint16_t teal_paramtab[LJ_MAX_LOCVAR];
+  FuncState *teal_paramtabfs[LJ_MAX_LOCVAR];
   uint8_t teal_paramoptional[LJ_MAX_LOCVAR];
   uint8_t teal_nparam;
   uint16_t teal_nshape;
   uint16_t teal_nfield;
   uint8_t teal_rettype;			/* Static Teal return type. */
   uint8_t teal_retnil;			/* Static Teal return nilability. */
+  uint16_t teal_rettab;			/* Static Teal return table type. */
+  FuncState *teal_rettabfs;		/* Owner of return table type. */
 };
 
 /* Binary and unary operators. ORDER OPR */
@@ -540,6 +594,9 @@ static void teal_check_record_field_store(FuncState *fs, ExpDesc *var,
 static int teal_record_field_find(FuncState *fs, uint16_t sid, GCstr *field);
 static void teal_check_global_store(FuncState *fs, ExpDesc *var, ExpDesc *e);
 static void teal_apply_global(FuncState *fs, ExpDesc *e);
+static void teal_check_table_index_read(FuncState *fs, ExpDesc *e);
+static void teal_check_table_index_store(FuncState *fs, ExpDesc *var,
+					 ExpDesc *e);
 
 /* -- Bytecode emitter for expressions ------------------------------------ */
 
@@ -554,6 +611,7 @@ static void expr_discharge(FuncState *fs, ExpDesc *e)
   } else if (e->k == VINDEXED) {
     BCReg rc = e->u.s.aux;
     teal_check_record_field_read(fs, e);
+    teal_check_table_index_read(fs, e);
     if ((int32_t)rc < 0) {
       ins = BCINS_ABC(BC_TGETS, 0, e->u.s.info, ~rc);
     } else if (rc > BCMAX_C) {
@@ -758,6 +816,7 @@ static void bcemit_store(FuncState *fs, ExpDesc *var, ExpDesc *e)
     BCReg ra, rc;
     lj_assertFS(var->k == VINDEXED, "bad expr type %d", var->k);
     teal_check_record_field_store(fs, var, e);
+    teal_check_table_index_store(fs, var, e);
     ra = expr_toanyreg(fs, e);
     rc = var->u.s.aux;
     if ((int32_t)rc < 0) {
@@ -785,6 +844,8 @@ static void bcemit_method(FuncState *fs, ExpDesc *e, ExpDesc *key)
   FuncState *shapefs = e->teal_shapefs ? e->teal_shapefs : fs;
   uint16_t sig = 0;
   FuncState *sigfs = NULL;
+  uint16_t tab = 0;
+  FuncState *tabfs = NULL;
   uint8_t ttype = TEAL_T_UNKNOWN;
   uint8_t tnil = 0;
   BCReg idx, func, fr2, obj;
@@ -795,6 +856,8 @@ static void bcemit_method(FuncState *fs, ExpDesc *e, ExpDesc *key)
       tnil = shapefs->teal_shape_fnil[fidx];
       sig = shapefs->teal_shape_fsig[fidx];
       sigfs = shapefs->teal_shape_fsigfs[fidx];
+      tab = shapefs->teal_shape_ftab[fidx];
+      tabfs = shapefs->teal_shape_ftabfs[fidx];
     } else if (fs->ls->teal && fs->ls->teal_strict) {
       lj_lex_error(fs->ls, 0, LJ_ERR_XTEAL,
 		   "unknown record field, ", strdata(key->u.sval));
@@ -822,6 +885,8 @@ static void bcemit_method(FuncState *fs, ExpDesc *e, ExpDesc *key)
   e->teal_nil = tnil;
   e->teal_sig = sig;
   e->teal_sigfs = sigfs;
+  e->teal_tab = tab;
+  e->teal_tabfs = tabfs;
 }
 
 /* -- Bytecode emitter for branches --------------------------------------- */
@@ -1223,6 +1288,8 @@ static void teal_type_unknown(TealTypeDesc *td)
   td->nilok = 0;
   td->sig = 0;
   td->sigfs = NULL;
+  td->tab = 0;
+  td->tabfs = NULL;
 }
 
 static int teal_type_builtin_from_name(TealTypeDesc *td, GCstr *s)
@@ -1257,12 +1324,29 @@ static int teal_alias_lookup(FuncState *fs, GCstr *s, TealTypeDesc *td)
   return 0;
 }
 
+static uint16_t teal_table_type_new(LexState *ls, FuncState *fs,
+				    TealTypeDesc key, TealTypeDesc val,
+				    uint16_t first, uint16_t count,
+				    uint16_t owner, int literal, int open);
+
 static void teal_type_from_name(LexState *ls, TealTypeDesc *td, GCstr *s)
 {
   if (teal_type_builtin_from_name(td, s))
     return;
   if (ls->teal && teal_alias_lookup(ls->fs, s, td))
     return;
+  if (ls->teal && s->len == 5 && memcmp(strdata(s), "table", 5) == 0) {
+    TealTypeDesc key, val;
+    teal_type_unknown(&key);
+    teal_type_unknown(&val);
+    key.type = TEAL_T_ANY;
+    val.type = TEAL_T_ANY;
+    teal_type_unknown(td);
+    td->type = TEAL_T_TABLE;
+    td->tab = teal_table_type_new(ls, ls->fs, key, val, 0, 0, 0, 0, 0);
+    td->tabfs = ls->fs;
+    return;
+  }
   teal_type_unknown(td);
   td->type = TEAL_T_RECORD;
 }
@@ -1280,33 +1364,80 @@ static const char *teal_type_name(uint8_t t)
   case TEAL_T_THREAD: return "thread";
   case TEAL_T_USERDATA: return "userdata";
   case TEAL_T_RECORD: return "record";
+  case TEAL_T_TABLE: return "table";
   default: return "unknown";
   }
 }
 
 static TealFuncSig *teal_func_sig(FuncState *fs, uint16_t id);
+static TealTableType *teal_table_type(FuncState *fs, uint16_t id);
 static int teal_type_matches(uint8_t got, uint8_t want);
 static int teal_func_sig_assignable(FuncState *wantfs, uint16_t wantid,
 				    FuncState *gotfs, uint16_t gotid);
+static int teal_type_desc_assignable(TealTypeDesc want, TealTypeDesc got);
+
+static TealTypeDesc teal_type_from_expr(FuncState *fs, ExpDesc *e)
+{
+  TealTypeDesc t;
+  UNUSED(fs);
+  teal_type_unknown(&t);
+  t.type = e->teal_type;
+  t.nilok = e->teal_nil;
+  t.sig = e->teal_sig;
+  t.sigfs = e->teal_sigfs;
+  t.tab = e->teal_tab;
+  t.tabfs = e->teal_tabfs;
+  return t;
+}
+
+static void teal_expr_set_type(ExpDesc *e, TealTypeDesc t)
+{
+  e->teal_type = t.type;
+  e->teal_nil = t.nilok;
+  e->teal_sig = t.sig;
+  e->teal_sigfs = t.sigfs;
+  e->teal_tab = t.tab;
+  e->teal_tabfs = t.tabfs;
+}
+
+static uint16_t teal_table_type_new(LexState *ls, FuncState *fs,
+				    TealTypeDesc key, TealTypeDesc val,
+				    uint16_t first, uint16_t count,
+				    uint16_t owner, int literal, int open)
+{
+  TealTableType *tt;
+  if (fs->teal_ntable >= TEAL_MAX_TABLE_TYPES)
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many table types, ", "");
+  tt = &fs->teal_tables[fs->teal_ntable];
+  tt->key = key;
+  tt->val = val;
+  tt->first = first;
+  tt->count = count;
+  tt->owner = owner;
+  tt->literal = (uint8_t)literal;
+  tt->open = (uint8_t)open;
+  fs->teal_ntable++;
+  return fs->teal_ntable;
+}
+
+static uint16_t teal_table_entry_add(LexState *ls, FuncState *fs,
+				     uint16_t owner,
+				     TealTypeDesc key, TealTypeDesc val)
+{
+  TealTableEntry *ent;
+  if (fs->teal_ntableentry >= TEAL_MAX_TABLE_ENTRIES)
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many table literal entries, ", "");
+  ent = &fs->teal_table_entries[fs->teal_ntableentry];
+  ent->owner = owner;
+  ent->key = key;
+  ent->val = val;
+  fs->teal_ntableentry++;
+  return fs->teal_ntableentry;
+}
 
 static int teal_type_assignable(TealTypeDesc want, ExpDesc *e)
 {
-  uint8_t got = e->teal_type;
-  if (want.type == TEAL_T_UNKNOWN || want.type == TEAL_T_ANY ||
-      got == TEAL_T_UNKNOWN || got == TEAL_T_ANY)
-    return 1;
-  if (got == TEAL_T_NIL)
-    return want.nilok || want.type == TEAL_T_NIL;
-  if (e->teal_nil && !want.nilok)
-    return 0;
-  if (want.type == got ||
-      (want.type == TEAL_T_NUMBER && got == TEAL_T_INTEGER)) {
-    if (want.type == TEAL_T_FUNCTION && want.sig != 0 && e->teal_sig != 0)
-      return teal_func_sig_assignable(want.sigfs, want.sig,
-				      e->teal_sigfs, e->teal_sig);
-    return 1;
-  }
-  return 0;
+  return teal_type_desc_assignable(want, teal_type_from_expr(e->teal_tabfs, e));
 }
 
 static int teal_type_matches(uint8_t got, uint8_t want)
@@ -1327,21 +1458,75 @@ static int teal_func_sig_assignable(FuncState *wantfs, uint16_t wantid,
   if (want->nparam != got->nparam || want->minparam != got->minparam)
     return 0;
   for (i = 0; i < want->nparam; i++) {
-    uint8_t wanttype = wantfs->teal_sig_ptype[want->first+i];
-    uint8_t gottype = gotfs->teal_sig_ptype[got->first+i];
-    uint8_t wantnil = wantfs->teal_sig_pnil[want->first+i];
-    uint8_t gotnil = gotfs->teal_sig_pnil[got->first+i];
-    if (wantnil && !gotnil)
-      return 0;
-    if (!teal_type_matches(wanttype, gottype))
+    TealTypeDesc wantp, gotp;
+    teal_type_unknown(&wantp);
+    teal_type_unknown(&gotp);
+    wantp.type = wantfs->teal_sig_ptype[want->first+i];
+    wantp.nilok = wantfs->teal_sig_pnil[want->first+i];
+    wantp.tab = wantfs->teal_sig_ptab[want->first+i];
+    wantp.tabfs = wantfs->teal_sig_ptabfs[want->first+i];
+    gotp.type = gotfs->teal_sig_ptype[got->first+i];
+    gotp.nilok = gotfs->teal_sig_pnil[got->first+i];
+    gotp.tab = gotfs->teal_sig_ptab[got->first+i];
+    gotp.tabfs = gotfs->teal_sig_ptabfs[got->first+i];
+    if (!teal_type_desc_assignable(wantp, gotp))
       return 0;
   }
-  if (got->retnil && !want->retnil)
-    return 0;
-  if (want->rettype == TEAL_T_UNKNOWN || want->rettype == TEAL_T_ANY ||
-      got->rettype == TEAL_T_UNKNOWN || got->rettype == TEAL_T_ANY)
+  {
+    TealTypeDesc wantret, gotret;
+    teal_type_unknown(&wantret);
+    teal_type_unknown(&gotret);
+    wantret.type = want->rettype;
+    wantret.nilok = want->retnil;
+    wantret.tab = want->rettab;
+    wantret.tabfs = want->rettabfs;
+    gotret.type = got->rettype;
+    gotret.nilok = got->retnil;
+    gotret.tab = got->rettab;
+    gotret.tabfs = got->rettabfs;
+    return teal_type_desc_assignable(wantret, gotret);
+  }
+}
+
+static int teal_type_desc_assignable(TealTypeDesc want, TealTypeDesc got)
+{
+  if (want.type == TEAL_T_UNKNOWN || want.type == TEAL_T_ANY ||
+      got.type == TEAL_T_UNKNOWN || got.type == TEAL_T_ANY)
     return 1;
-  return teal_type_matches(got->rettype, want->rettype);
+  if (got.type == TEAL_T_NIL)
+    return want.nilok || want.type == TEAL_T_NIL;
+  if (got.nilok && !want.nilok)
+    return 0;
+  if (want.type != got.type &&
+      !(want.type == TEAL_T_NUMBER && got.type == TEAL_T_INTEGER))
+    return 0;
+  if (want.type == TEAL_T_FUNCTION && want.sig != 0 && got.sig != 0)
+    return teal_func_sig_assignable(want.sigfs, want.sig,
+				    got.sigfs, got.sig);
+  if (want.type == TEAL_T_TABLE && want.tab != 0 && got.tab != 0) {
+    TealTableType *wtab = teal_table_type(want.tabfs, want.tab);
+    TealTableType *gtab = teal_table_type(got.tabfs, got.tab);
+    uint16_t i;
+    if (wtab == NULL || gtab == NULL)
+      return 1;
+    if (gtab->literal) {
+      for (i = 0; i < got.tabfs->teal_ntableentry; i++) {
+	TealTableEntry *ent = &got.tabfs->teal_table_entries[i];
+	if (ent->owner != gtab->owner)
+	  continue;
+	if (!teal_type_desc_assignable(wtab->key, ent->key) ||
+	    !teal_type_desc_assignable(wtab->val, ent->val))
+	  return 0;
+      }
+    }
+    if (gtab->key.type != TEAL_T_UNKNOWN &&
+	!teal_type_desc_assignable(wtab->key, gtab->key))
+      return 0;
+    if (gtab->val.type != TEAL_T_UNKNOWN &&
+	!teal_type_desc_assignable(wtab->val, gtab->val))
+      return 0;
+  }
+  return 1;
 }
 
 static int teal_is_definitely_true(ExpDesc *e, TealTypeDesc want)
@@ -1380,6 +1565,7 @@ static const char *teal_lua_type_name(uint8_t t)
   case TEAL_T_THREAD: return "thread";
   case TEAL_T_USERDATA: return "userdata";
   case TEAL_T_RECORD: return "table";
+  case TEAL_T_TABLE: return "table";
   default: return NULL;
   }
 }
@@ -1523,6 +1709,36 @@ static TealFuncSig *teal_func_sig(FuncState *fs, uint16_t id)
 	 &fs->teal_sigs[id-1] : NULL;
 }
 
+static TealTableType *teal_table_type(FuncState *fs, uint16_t id)
+{
+  return fs != NULL && id != 0 && id <= fs->teal_ntable ?
+	 &fs->teal_tables[id-1] : NULL;
+}
+
+static uint16_t teal_table_type_clone(LexState *ls, FuncState *dstfs,
+				      TealTypeDesc *t);
+
+static TealTypeDesc teal_type_clone(LexState *ls, FuncState *dstfs,
+				    TealTypeDesc t)
+{
+  if (t.type == TEAL_T_TABLE && t.tab != 0)
+    t.tab = teal_table_type_clone(ls, dstfs, &t);
+  return t;
+}
+
+static uint16_t teal_table_type_clone(LexState *ls, FuncState *dstfs,
+				      TealTypeDesc *t)
+{
+  TealTableType *src = teal_table_type(t->tabfs, t->tab);
+  TealTypeDesc key, val;
+  if (src == NULL)
+    return 0;
+  key = teal_type_clone(ls, dstfs, src->key);
+  val = teal_type_clone(ls, dstfs, src->val);
+  t->tabfs = dstfs;
+  return teal_table_type_new(ls, dstfs, key, val, 0, 0, 0, 0, src->open);
+}
+
 static uint16_t teal_func_sig_new(LexState *ls, FuncState *pfs, FuncState *cfs)
 {
   TealFuncSig *sig;
@@ -1539,9 +1755,31 @@ static uint16_t teal_func_sig_new(LexState *ls, FuncState *pfs, FuncState *cfs)
   sig->minparam = cfs->teal_nparam;
   sig->rettype = cfs->teal_rettype;
   sig->retnil = cfs->teal_retnil;
+  sig->rettab = cfs->teal_rettab;
+  sig->rettabfs = cfs->teal_rettabfs;
+  if (sig->rettab != 0) {
+    TealTypeDesc ret;
+    teal_type_unknown(&ret);
+    ret.type = sig->rettype;
+    ret.nilok = sig->retnil;
+    ret.tab = sig->rettab;
+    ret.tabfs = sig->rettabfs;
+    ret = teal_type_clone(ls, pfs, ret);
+    sig->rettab = ret.tab;
+    sig->rettabfs = ret.tabfs;
+  }
   for (i = 0; i < cfs->teal_nparam; i++) {
-    pfs->teal_sig_ptype[first+i] = cfs->teal_paramtype[i];
-    pfs->teal_sig_pnil[first+i] = cfs->teal_paramnil[i];
+    TealTypeDesc pt;
+    teal_type_unknown(&pt);
+    pt.type = cfs->teal_paramtype[i];
+    pt.nilok = cfs->teal_paramnil[i];
+    pt.tab = cfs->teal_paramtab[i];
+    pt.tabfs = cfs->teal_paramtabfs[i];
+    pt = teal_type_clone(ls, pfs, pt);
+    pfs->teal_sig_ptype[first+i] = pt.type;
+    pfs->teal_sig_pnil[first+i] = pt.nilok;
+    pfs->teal_sig_ptab[first+i] = pt.tab;
+    pfs->teal_sig_ptabfs[first+i] = pt.tabfs;
     if (cfs->teal_paramoptional[i] && i < sig->minparam)
       sig->minparam = (uint8_t)i;
   }
@@ -1569,9 +1807,13 @@ static uint16_t teal_func_sig_new_type(LexState *ls, FuncState *fs,
   sig->minparam = (uint8_t)nparam;
   sig->rettype = ret.type;
   sig->retnil = ret.nilok;
+  sig->rettab = ret.tab;
+  sig->rettabfs = ret.tabfs;
   for (i = 0; i < nparam; i++) {
     fs->teal_sig_ptype[first+i] = ptype[i].type;
     fs->teal_sig_pnil[first+i] = ptype[i].nilok;
+    fs->teal_sig_ptab[first+i] = ptype[i].tab;
+    fs->teal_sig_ptabfs[first+i] = ptype[i].tabfs;
     if (poptional[i] && i < sig->minparam)
       sig->minparam = (uint8_t)i;
   }
@@ -1591,6 +1833,8 @@ static void teal_check_call_arg(LexState *ls, FuncState *sigfs, uint16_t sid,
   teal_type_unknown(&want);
   want.type = sigfs->teal_sig_ptype[sig->first + narg - 1];
   want.nilok = sigfs->teal_sig_pnil[sig->first + narg - 1];
+  want.tab = sigfs->teal_sig_ptab[sig->first + narg - 1];
+  want.tabfs = sigfs->teal_sig_ptabfs[sig->first + narg - 1];
   teal_check_assign(ls, want, arg, "function argument type mismatch, ");
 }
 
@@ -1661,6 +1905,8 @@ static void teal_apply_global(FuncState *fs, ExpDesc *e)
   e->teal_nil = t.nilok;
   e->teal_sig = t.sig;
   e->teal_sigfs = t.sigfs;
+  e->teal_tab = t.tab;
+  e->teal_tabfs = t.tabfs;
   e->teal_shape = shape;
   e->teal_shapefs = shapefs;
 }
@@ -1677,12 +1923,15 @@ static void teal_check_global_store(FuncState *fs, ExpDesc *var, ExpDesc *e)
     teal_check_assign(ls, want, e, "global type mismatch, ");
     return;
   }
-  if (e->teal_type == TEAL_T_FUNCTION || e->teal_type == TEAL_T_RECORD) {
+  if (e->teal_type == TEAL_T_FUNCTION || e->teal_type == TEAL_T_RECORD ||
+      e->teal_type == TEAL_T_TABLE) {
     teal_type_unknown(&have);
     have.type = e->teal_type;
     have.nilok = e->teal_nil;
     have.sig = e->teal_sig;
     have.sigfs = e->teal_sigfs ? e->teal_sigfs : fs;
+    have.tab = e->teal_tab;
+    have.tabfs = e->teal_tabfs ? e->teal_tabfs : fs;
     teal_global_define(ls, var->u.sval, have, e->teal_shape,
 		       e->teal_shapefs ? e->teal_shapefs : fs);
   }
@@ -1744,6 +1993,8 @@ static int teal_record_field_add_to(LexState *ls, FuncState *fs,
   fs->teal_shape_fnil[idx] = t.nilok;
   fs->teal_shape_fsig[idx] = fsig;
   fs->teal_shape_fsigfs[idx] = fsigfs;
+  fs->teal_shape_ftab[idx] = t.tab;
+  fs->teal_shape_ftabfs[idx] = t.tabfs;
   shape->count++;
   return idx;
 }
@@ -1783,6 +2034,9 @@ static uint16_t teal_record_shape_clone(LexState *ls, FuncState *srcfs,
       t.nilok = srcfs->teal_shape_fnil[i];
       t.sig = srcfs->teal_shape_fsig[i];
       t.sigfs = srcfs->teal_shape_fsigfs[i];
+      t.tab = srcfs->teal_shape_ftab[i];
+      t.tabfs = srcfs->teal_shape_ftabfs[i];
+      t = teal_type_clone(ls, dstfs, t);
       (void)teal_record_field_add(ls, newid, srcfs->teal_shape_field[i],
 				  t, t.sig, t.sigfs);
     }
@@ -1809,6 +2063,8 @@ static void teal_check_record_field_read(FuncState *fs, ExpDesc *e)
   e->teal_nil = shapefs->teal_shape_fnil[idx];
   e->teal_sig = shapefs->teal_shape_fsig[idx];
   e->teal_sigfs = shapefs->teal_shape_fsigfs[idx];
+  e->teal_tab = shapefs->teal_shape_ftab[idx];
+  e->teal_tabfs = shapefs->teal_shape_ftabfs[idx];
 }
 
 static void teal_check_record_field_store(FuncState *fs, ExpDesc *var,
@@ -1830,6 +2086,8 @@ static void teal_check_record_field_store(FuncState *fs, ExpDesc *var,
     if (!ls->teal_strict || shape->open) {
       have.type = e->teal_type;
       have.nilok = e->teal_nil;
+      have.tab = e->teal_tab;
+      have.tabfs = e->teal_tabfs;
       (void)teal_record_field_add_to(ls, shapefs, var->teal_field_shape,
 				     var->teal_field, have, e->teal_sig,
 				     e->teal_sig != 0 ?
@@ -1844,10 +2102,71 @@ static void teal_check_record_field_store(FuncState *fs, ExpDesc *var,
   have.nilok = shapefs->teal_shape_fnil[idx];
   have.sig = shapefs->teal_shape_fsig[idx];
   have.sigfs = shapefs->teal_shape_fsigfs[idx];
+  have.tab = shapefs->teal_shape_ftab[idx];
+  have.tabfs = shapefs->teal_shape_ftabfs[idx];
   teal_check_assign(ls, have, e, "record field type mismatch, ");
   if (have.type == TEAL_T_FUNCTION && e->teal_sig != 0) {
     shapefs->teal_shape_fsig[idx] = e->teal_sig;
     shapefs->teal_shape_fsigfs[idx] = e->teal_sigfs ? e->teal_sigfs : fs;
+  }
+}
+
+static TealTypeDesc teal_type_from_index_key(ExpDesc *e)
+{
+  TealTypeDesc t;
+  teal_type_unknown(&t);
+  t.type = e->teal_index_keytype;
+  t.nilok = e->teal_index_keynil;
+  t.tab = e->teal_index_keytab;
+  t.tabfs = e->teal_index_keytabfs;
+  return t;
+}
+
+static void teal_check_table_index_read(FuncState *fs, ExpDesc *e)
+{
+  LexState *ls = fs->ls;
+  FuncState *tabfs = e->teal_index_tabfs ? e->teal_index_tabfs : fs;
+  TealTableType *tt;
+  TealTypeDesc key;
+  if (!ls->teal || e->teal_index_tab == 0)
+    return;
+  tt = teal_table_type(tabfs, e->teal_index_tab);
+  if (tt == NULL)
+    return;
+  key = teal_type_from_index_key(e);
+  if (ls->teal_strict && key.type != TEAL_T_UNKNOWN &&
+      !teal_type_desc_assignable(tt->key, key))
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		 "table key type mismatch, ", teal_type_name(tt->key.type));
+  teal_expr_set_type(e, tt->val);
+}
+
+static void teal_check_table_index_store(FuncState *fs, ExpDesc *var,
+					 ExpDesc *e)
+{
+  LexState *ls = fs->ls;
+  FuncState *tabfs = var->teal_index_tabfs ? var->teal_index_tabfs : fs;
+  TealTableType *tt;
+  TealTypeDesc key, val;
+  if (!ls->teal || var->teal_index_tab == 0)
+    return;
+  tt = teal_table_type(tabfs, var->teal_index_tab);
+  if (tt == NULL)
+    return;
+  key = teal_type_from_index_key(var);
+  val = teal_type_from_expr(fs, e);
+  if (tt->open && tt->key.type == TEAL_T_UNKNOWN) {
+    tt->key = key;
+  } else if (ls->teal_strict && key.type != TEAL_T_UNKNOWN &&
+	     !teal_type_desc_assignable(tt->key, key)) {
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		 "table key type mismatch, ", teal_type_name(tt->key.type));
+  }
+  if (tt->open && tt->val.type == TEAL_T_UNKNOWN) {
+    tt->val = val;
+  } else if (ls->teal_strict && !teal_type_desc_assignable(tt->val, val)) {
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		 "table value type mismatch, ", teal_type_name(tt->val.type));
   }
 }
 
@@ -1861,6 +2180,7 @@ static int teal_type_end(LexState *ls)
   case TK_end: case TK_then: case TK_do: case TK_eof:
   case TK_return: case TK_local: case TK_if:
   case TK_for: case TK_while: case TK_repeat: case TK_break:
+  case ':': case '}':
     return 1;
   default:
     return lex_isteal(ls, "as") || lex_isteal(ls, "is");
@@ -1967,6 +2287,54 @@ static TealTypeDesc teal_parse_function_type(LexState *ls)
   return td;
 }
 
+static TealTypeDesc teal_parse_table_key_type(LexState *ls)
+{
+  if (ls->tok == TK_name || (!LJ_52 && ls->tok == TK_goto)) {
+    GCstr *first = strV(&ls->tokval);
+    lj_lex_next(ls);
+    return teal_parse_type_after_name(ls, first);
+  }
+  return teal_parse_type(ls);
+}
+
+static TealTypeDesc teal_parse_table_type(LexState *ls)
+{
+  FuncState *fs = ls->fs;
+  TealTypeDesc td, key, val;
+  int ismap = 0;
+  teal_type_unknown(&td);
+  teal_type_unknown(&key);
+  teal_type_unknown(&val);
+  td.type = TEAL_T_TABLE;
+  lj_lex_next(ls);  /* Skip '{'. */
+  if (lex_opt(ls, '}')) {
+    key.type = TEAL_T_ANY;
+    val.type = TEAL_T_ANY;
+  } else {
+    TealTypeDesc first = teal_parse_table_key_type(ls);
+    if (lex_opt(ls, ':')) {
+      ismap = 1;
+      key = first;
+      val = teal_parse_type(ls);
+    } else {
+      key.type = TEAL_T_INTEGER;
+      val = first;
+      while (lex_opt(ls, ',')) {
+	TealTypeDesc part = teal_parse_type(ls);
+	teal_type_merge(&val, part);
+      }
+    }
+    lex_check(ls, '}');
+  }
+  if (!ismap && val.type == TEAL_T_UNKNOWN)
+    val.type = TEAL_T_ANY;
+  if (key.type == TEAL_T_UNKNOWN)
+    key.type = TEAL_T_ANY;
+  td.tab = teal_table_type_new(ls, fs, key, val, 0, 0, 0, 0, 0);
+  td.tabfs = fs;
+  return td;
+}
+
 static TealTypeDesc teal_parse_type_tail(LexState *ls, TealTypeDesc td)
 {
   int depth = 0;
@@ -1984,6 +2352,9 @@ static TealTypeDesc teal_parse_type_tail(LexState *ls, TealTypeDesc td)
     } else if (ls->tok == TK_function) {
       TealTypeDesc part = teal_parse_function_type(ls);
       teal_type_merge(&td, part);
+    } else if (ls->tok == '{') {
+      TealTypeDesc part = teal_parse_table_type(ls);
+      teal_type_merge(&td, part);
     } else if (ls->tok == TK_nil) {
       if (td.type == TEAL_T_UNKNOWN)
 	td.type = TEAL_T_NIL;
@@ -1992,10 +2363,10 @@ static TealTypeDesc teal_parse_type_tail(LexState *ls, TealTypeDesc td)
       lj_lex_next(ls);
     } else if (ls->tok == '|') {
       lj_lex_next(ls);
-    } else if (ls->tok == '(' || ls->tok == '[' || ls->tok == '{') {
+    } else if (ls->tok == '(' || ls->tok == '[') {
       depth++;
       lj_lex_next(ls);
-    } else if (ls->tok == ')' || ls->tok == ']' || ls->tok == '}') {
+    } else if (ls->tok == ')' || ls->tok == ']') {
       if (depth == 0) break;
       depth--;
       lj_lex_next(ls);
@@ -2135,6 +2506,8 @@ static MSize var_lookup_(FuncState *fs, GCstr *name, ExpDesc *e, int first)
       e->teal_nil = fs->teal_vnil[reg];
       e->teal_shape = fs->teal_vshape[reg];
       e->teal_shapefs = fs->teal_vshapefs[reg];
+      e->teal_tab = fs->teal_vtab[reg];
+      e->teal_tabfs = fs->teal_vtabfs[reg];
       e->teal_sig = fs->teal_vsig[reg];
       e->teal_sigfs = fs->teal_vsigfs[reg];
       if (!first)
@@ -2641,6 +3014,8 @@ static void fs_init(LexState *ls, FuncState *fs)
   memset(fs->teal_vsigfs, 0, sizeof(fs->teal_vsigfs));
   memset(fs->teal_vshape, 0, sizeof(fs->teal_vshape));
   memset(fs->teal_vshapefs, 0, sizeof(fs->teal_vshapefs));
+  memset(fs->teal_vtab, 0, sizeof(fs->teal_vtab));
+  memset(fs->teal_vtabfs, 0, sizeof(fs->teal_vtabfs));
   memset(fs->teal_shapes, 0, sizeof(fs->teal_shapes));
   memset(fs->teal_shape_field, 0, sizeof(fs->teal_shape_field));
   memset(fs->teal_shape_owner, 0, sizeof(fs->teal_shape_owner));
@@ -2648,9 +3023,15 @@ static void fs_init(LexState *ls, FuncState *fs)
   memset(fs->teal_shape_fnil, 0, sizeof(fs->teal_shape_fnil));
   memset(fs->teal_shape_fsig, 0, sizeof(fs->teal_shape_fsig));
   memset(fs->teal_shape_fsigfs, 0, sizeof(fs->teal_shape_fsigfs));
+  memset(fs->teal_shape_ftab, 0, sizeof(fs->teal_shape_ftab));
+  memset(fs->teal_shape_ftabfs, 0, sizeof(fs->teal_shape_ftabfs));
   memset(fs->teal_sigs, 0, sizeof(fs->teal_sigs));
   memset(fs->teal_sig_ptype, 0, sizeof(fs->teal_sig_ptype));
   memset(fs->teal_sig_pnil, 0, sizeof(fs->teal_sig_pnil));
+  memset(fs->teal_sig_ptab, 0, sizeof(fs->teal_sig_ptab));
+  memset(fs->teal_sig_ptabfs, 0, sizeof(fs->teal_sig_ptabfs));
+  memset(fs->teal_tables, 0, sizeof(fs->teal_tables));
+  memset(fs->teal_table_entries, 0, sizeof(fs->teal_table_entries));
   memset(fs->teal_alias_name, 0, sizeof(fs->teal_alias_name));
   memset(fs->teal_alias_type, 0, sizeof(fs->teal_alias_type));
   memset(fs->teal_global_name, 0, sizeof(fs->teal_global_name));
@@ -2659,9 +3040,14 @@ static void fs_init(LexState *ls, FuncState *fs)
   memset(fs->teal_global_shapefs, 0, sizeof(fs->teal_global_shapefs));
   memset(fs->teal_paramtype, 0, sizeof(fs->teal_paramtype));
   memset(fs->teal_paramnil, 0, sizeof(fs->teal_paramnil));
+  memset(fs->teal_paramtab, 0, sizeof(fs->teal_paramtab));
+  memset(fs->teal_paramtabfs, 0, sizeof(fs->teal_paramtabfs));
   memset(fs->teal_paramoptional, 0, sizeof(fs->teal_paramoptional));
   fs->teal_nsig = 0;
   fs->teal_nsigparam = 0;
+  fs->teal_ntable = 0;
+  fs->teal_ntableentry = 0;
+  fs->teal_ntableowner = 0;
   fs->teal_nalias = 0;
   fs->teal_nglobal = 0;
   fs->teal_nparam = 0;
@@ -2669,6 +3055,8 @@ static void fs_init(LexState *ls, FuncState *fs)
   fs->teal_nfield = 0;
   fs->teal_rettype = TEAL_T_UNKNOWN;
   fs->teal_retnil = 0;
+  fs->teal_rettab = 0;
+  fs->teal_rettabfs = NULL;
   fs->kt = lj_tab_new(L, 0, 0);
   /* Anchor table of constants in stack to avoid being collected. */
   settabV(L, L->top, fs->kt);
@@ -2685,13 +3073,41 @@ static void expr_str(LexState *ls, ExpDesc *e)
 {
   expr_init(e, VKSTR, 0);
   e->u.sval = lex_str(ls);
+  e->teal_type = TEAL_T_STRING;
 }
 
 /* Return index expression. */
 static void expr_index(FuncState *fs, ExpDesc *t, ExpDesc *e)
 {
+  uint16_t tab = t->teal_tab;
+  FuncState *tabfs = t->teal_tabfs ? t->teal_tabfs : fs;
+  TealTypeDesc keytype = teal_type_from_expr(fs, e);
+  TealTableType *tt = tab != 0 ? teal_table_type(tabfs, tab) : NULL;
   /* Already called: expr_toval(fs, e). */
   t->k = VINDEXED;
+  t->teal_type = TEAL_T_UNKNOWN;
+  t->teal_nil = 0;
+  t->teal_shape = 0;
+  t->teal_shapefs = NULL;
+  t->teal_tab = 0;
+  t->teal_tabfs = NULL;
+  t->teal_sig = 0;
+  t->teal_sigfs = NULL;
+  t->teal_index_tab = 0;
+  t->teal_index_tabfs = NULL;
+  t->teal_index_keytype = TEAL_T_UNKNOWN;
+  t->teal_index_keynil = 0;
+  t->teal_index_keytab = 0;
+  t->teal_index_keytabfs = NULL;
+  if (tt != NULL) {
+    t->teal_index_tab = tab;
+    t->teal_index_tabfs = tabfs;
+    t->teal_index_keytype = keytype.type;
+    t->teal_index_keynil = keytype.nilok;
+    t->teal_index_keytab = keytype.tab;
+    t->teal_index_keytabfs = keytype.tabfs;
+    teal_expr_set_type(t, tt->val);
+  }
   if (expr_isnumk(e)) {
 #if LJ_DUALNUM
     if (tvisint(expr_numtv(e))) {
@@ -2726,8 +3142,12 @@ static void expr_field(LexState *ls, ExpDesc *v)
   ExpDesc key;
   uint16_t shape;
   FuncState *shapefs;
+  uint16_t tab;
+  FuncState *tabfs;
   shape = v->teal_shape;
   shapefs = v->teal_shapefs ? v->teal_shapefs : fs;
+  tab = v->teal_tab;
+  tabfs = v->teal_tabfs ? v->teal_tabfs : fs;
   expr_toanyreg(fs, v);
   lj_lex_next(ls);  /* Skip dot or colon. */
   expr_str(ls, &key);
@@ -2736,8 +3156,21 @@ static void expr_field(LexState *ls, ExpDesc *v)
   v->teal_nil = 0;
   v->teal_shape = 0;
   v->teal_shapefs = NULL;
+  v->teal_tab = 0;
+  v->teal_tabfs = NULL;
   v->teal_sig = 0;
   v->teal_sigfs = NULL;
+  if (tab != 0) {
+    TealTableType *tt = teal_table_type(tabfs, tab);
+    v->teal_index_tab = tab;
+    v->teal_index_tabfs = tabfs;
+    v->teal_index_keytype = TEAL_T_STRING;
+    v->teal_index_keynil = 0;
+    v->teal_index_keytab = 0;
+    v->teal_index_keytabfs = NULL;
+    if (tt != NULL)
+      teal_expr_set_type(v, tt->val);
+  }
   if (shape != 0) {
     int idx = teal_record_field_find(shapefs, shape, key.u.sval);
     v->teal_field_shape = shape;
@@ -2748,6 +3181,8 @@ static void expr_field(LexState *ls, ExpDesc *v)
       v->teal_nil = shapefs->teal_shape_fnil[idx];
       v->teal_sig = shapefs->teal_shape_fsig[idx];
       v->teal_sigfs = shapefs->teal_shape_fsigfs[idx];
+      v->teal_tab = shapefs->teal_shape_ftab[idx];
+      v->teal_tabfs = shapefs->teal_shape_ftabfs[idx];
     }
   }
 }
@@ -2786,6 +3221,17 @@ static void expr_table(LexState *ls, ExpDesc *e)
   uint32_t nhash = 0;  /* Number of hash entries. */
   BCReg freg = fs->freereg;
   BCPos pc = bcemit_AD(fs, BC_TNEW, freg, 0);
+  TealTypeDesc table_key, table_val;
+  uint16_t table_first = fs->teal_ntableentry;
+  uint16_t table_count = 0;
+  uint16_t table_owner = 0;
+  teal_type_unknown(&table_key);
+  teal_type_unknown(&table_val);
+  if (ls->teal) {
+    if (fs->teal_ntableowner == 0xffff)
+      lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many table literals, ", "");
+    table_owner = ++fs->teal_ntableowner;
+  }
   expr_init(e, VNONRELOC, freg);
   bcreg_reserve(fs, 1);
   freg++;
@@ -2804,12 +3250,19 @@ static void expr_table(LexState *ls, ExpDesc *e)
       lex_check(ls, '=');
       nhash++;
     } else {
-      expr_init(&key, VKNUM, 0);
-      setintV(&key.u.nval, (int)narr);
+      teal_expr_int(&key, (int32_t)narr);
       narr++;
       needarr = vcall = 1;
     }
     expr(ls, &val);
+    if (ls->teal) {
+      TealTypeDesc kt = teal_type_from_expr(fs, &key);
+      TealTypeDesc vt = teal_type_from_expr(fs, &val);
+      (void)teal_table_entry_add(ls, fs, table_owner, kt, vt);
+      table_count++;
+      teal_type_merge(&table_key, kt);
+      teal_type_merge(&table_val, vt);
+    }
     if (expr_isk(&key) && key.k != VKNIL &&
 	(key.k == VKSTR || expr_isk_nojump(&val))) {
       TValue k, *v;
@@ -2872,6 +3325,20 @@ static void expr_table(LexState *ls, ExpDesc *e)
       lj_tab_reasize(fs->L, t, narr-1);
     lj_gc_check(fs->L);
   }
+  if (ls->teal) {
+    if (table_count == 0) {
+      table_key.type = TEAL_T_UNKNOWN;
+      table_val.type = TEAL_T_UNKNOWN;
+    } else if (table_key.type == TEAL_T_UNKNOWN) {
+      table_key.type = TEAL_T_ANY;
+    }
+    e->teal_type = TEAL_T_TABLE;
+    e->teal_nil = 0;
+    e->teal_tab = teal_table_type_new(ls, fs, table_key, table_val,
+				      table_first, table_count, table_owner, 1,
+				      table_count == 0);
+    e->teal_tabfs = fs;
+  }
 }
 
 /* Parse function parameters. */
@@ -2920,8 +3387,12 @@ static BCReg parse_params(LexState *ls, int needself)
     fs->teal_vnil[i] = ptype[i].nilok;
     fs->teal_vsig[i] = ptype[i].sig;
     fs->teal_vsigfs[i] = ptype[i].sigfs;
+    fs->teal_vtab[i] = ptype[i].tab;
+    fs->teal_vtabfs[i] = ptype[i].tabfs;
     fs->teal_paramtype[i] = ptype[i].type;
     fs->teal_paramnil[i] = ptype[i].nilok;
+    fs->teal_paramtab[i] = ptype[i].tab;
+    fs->teal_paramtabfs[i] = ptype[i].tabfs;
     fs->teal_paramoptional[i] = poptional[i];
   }
   fs->teal_nparam = nparams;
@@ -2955,6 +3426,8 @@ static void parse_body(LexState *ls, ExpDesc *e, int needself,
     TealTypeDesc ret = teal_parse_type(ls);
     fs.teal_rettype = ret.type;
     fs.teal_retnil = ret.nilok;
+    fs.teal_rettab = ret.tab;
+    fs.teal_rettabfs = ret.tabfs;
   }
   fs.bcbase = pfs->bcbase + pfs->pc;
   fs.bclim = pfs->bclim - pfs->pc;
@@ -3071,6 +3544,8 @@ static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args)
     if (ts != NULL) {
       e->teal_type = ts->rettype;
       e->teal_nil = ts->retnil;
+      e->teal_tab = ts->rettab;
+      e->teal_tabfs = ts->rettabfs;
     }
   }
   fs->bcbase[fs->pc - 1].line = line;
@@ -3245,6 +3720,8 @@ static void expr_unop(LexState *ls, ExpDesc *v)
 		     "invalid strict cast to ", teal_type_name(cast.type));
       v->teal_type = cast.type;
       v->teal_nil = cast.nilok;
+      v->teal_tab = cast.tab;
+      v->teal_tabfs = cast.tabfs;
     }
     return;
   }
@@ -3394,6 +3871,8 @@ static void parse_assignment(LexState *ls, LHSVarList *lh, BCReg nvars)
 	want.nilok = ls->fs->teal_vnil[lh->v.u.s.info];
 	want.sig = ls->fs->teal_vsig[lh->v.u.s.info];
 	want.sigfs = ls->fs->teal_vsigfs[lh->v.u.s.info];
+	want.tab = ls->fs->teal_vtab[lh->v.u.s.info];
+	want.tabfs = ls->fs->teal_vtabfs[lh->v.u.s.info];
 	teal_check_assign(ls, want, &e, "assignment type mismatch, ");
       }
       bcemit_store(ls->fs, &lh->v, &e);
@@ -3544,6 +4023,8 @@ static void parse_teal_global_decl(LexState *ls)
     t.nilok = e.teal_nil;
     t.sig = e.teal_sig;
     t.sigfs = e.teal_sigfs ? e.teal_sigfs : fs;
+    t.tab = e.teal_tab;
+    t.tabfs = e.teal_tabfs ? e.teal_tabfs : fs;
   }
   shape = e.teal_shape;
   shapefs = e.teal_shapefs ? e.teal_shapefs : fs;
@@ -3626,12 +4107,16 @@ static void parse_local(LexState *ls)
     TealTypeDesc vtype[LJ_MAX_LOCVAR];
     uint16_t vsig[LJ_MAX_LOCVAR];
     FuncState *vsigfs[LJ_MAX_LOCVAR];
+    uint16_t vtab[LJ_MAX_LOCVAR];
+    FuncState *vtabfs[LJ_MAX_LOCVAR];
     BCReg base = ls->fs->nactvar;
     uint32_t i;
     for (i = 0; i < LJ_MAX_LOCVAR; i++) {
       teal_type_unknown(&vtype[i]);
       vsig[i] = 0;
       vsigfs[i] = NULL;
+      vtab[i] = 0;
+      vtabfs[i] = NULL;
     }
     do {  /* Collect LHS. */
       BCReg n = nvars++;
@@ -3649,8 +4134,12 @@ static void parse_local(LexState *ls)
 	vtype[n].nilok |= t.nilok;
 	vtype[n].sig = t.sig;
 	vtype[n].sigfs = t.sigfs;
+	vtype[n].tab = t.tab;
+	vtype[n].tabfs = t.tabfs;
 	vsig[n] = t.sig;
 	vsigfs[n] = t.sigfs;
+	vtab[n] = t.tab;
+	vtabfs[n] = t.tabfs;
       }
     } while (lex_opt(ls, ','));
     if (lex_opt(ls, '=')) {  /* Optional RHS. */
@@ -3661,6 +4150,9 @@ static void parse_local(LexState *ls)
 	vsig[0] = e.teal_sig;
 	vsigfs[0] = e.teal_sig != 0 ?
 		    (e.teal_sigfs ? e.teal_sigfs : ls->fs) : NULL;
+	vtab[0] = e.teal_tab;
+	vtabfs[0] = e.teal_tab != 0 ?
+		    (e.teal_tabfs ? e.teal_tabfs : ls->fs) : NULL;
       }
       if (nvars == 1 && nexps == 1)
 	teal_check_assign(ls, vtype[0], &e, "type mismatch, ");
@@ -3687,6 +4179,8 @@ static void parse_local(LexState *ls)
       ls->fs->teal_vnil[base+i] = vtype[i].nilok;
       ls->fs->teal_vsig[base+i] = vsig[i];
       ls->fs->teal_vsigfs[base+i] = vsigfs[i];
+      ls->fs->teal_vtab[base+i] = vtab[i];
+      ls->fs->teal_vtabfs[base+i] = vtabfs[i];
     }
   }
 }
@@ -3746,6 +4240,8 @@ static void parse_return(LexState *ls)
       teal_type_unknown(&want);
       want.type = fs->teal_rettype;
       want.nilok = fs->teal_retnil;
+      want.tab = fs->teal_rettab;
+      want.tabfs = fs->teal_rettabfs;
       teal_check_assign(ls, want, &e, "return type mismatch, ");
       teal_emit_freeze_record(ls, &e);
     }

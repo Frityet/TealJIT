@@ -22,6 +22,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" record_method_colon_call.tl
 "$LUAJIT" type_aliases.tl
 "$LUAJIT" global_declarations.tl
+"$LUAJIT" table_types.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   echo "as_bad.tl unexpectedly passed" >&2
@@ -202,6 +203,42 @@ if "$LUAJIT" global_record_unknown_bad.tl >/tmp/tealjit-global-record-unknown.ou
   exit 1
 fi
 grep -q "unknown record field" /tmp/tealjit-global-record-unknown.out
+
+if "$LUAJIT" table_array_value_bad.tl >/tmp/tealjit-table-array-value.out 2>&1; then
+  echo "table_array_value_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-table-array-value.out
+
+if "$LUAJIT" table_map_key_bad.tl >/tmp/tealjit-table-map-key.out 2>&1; then
+  echo "table_map_key_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-table-map-key.out
+
+if "$LUAJIT" table_map_value_bad.tl >/tmp/tealjit-table-map-value.out 2>&1; then
+  echo "table_map_value_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-table-map-value.out
+
+if "$LUAJIT" table_index_key_bad.tl >/tmp/tealjit-table-index-key.out 2>&1; then
+  echo "table_index_key_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "table key type mismatch" /tmp/tealjit-table-index-key.out
+
+if "$LUAJIT" table_index_value_bad.tl >/tmp/tealjit-table-index-value.out 2>&1; then
+  echo "table_index_value_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "table value type mismatch" /tmp/tealjit-table-index-value.out
+
+if "$LUAJIT" table_nested_value_bad.tl >/tmp/tealjit-table-nested-value.out 2>&1; then
+  echo "table_nested_value_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-table-nested-value.out
 
 if "$LUAJIT" record_method_colon_arg_bad.tl >/tmp/tealjit-method-arg.out 2>&1; then
   echo "record_method_colon_arg_bad.tl unexpectedly passed" >&2
