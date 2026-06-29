@@ -22,6 +22,10 @@ extern "C" {
 #define LJ_WASMTIME_IMPORT_JIT_ENTER "lj_wasm_import_jit_enter"
 #define LJ_WASMTIME_IMPORT_JIT_PATCH_EXIT "lj_wasm_import_jit_patch_exit"
 
+#define LJ_WASMTIME_HANDLE_MAX 1024u
+#define LJ_WASMTIME_GUEST_MAX_CSTR 4096u
+#define LJ_WASMTIME_GUEST_MAX_CCALL_SIZE 4096u
+
 struct CCallState;
 struct CTState;
 struct CType;
@@ -159,6 +163,15 @@ typedef struct LJWasmtimeGuestMemory {
   uint64_t size;
 } LJWasmtimeGuestMemory;
 
+typedef struct LJWasmtimeHandleTable {
+  LJWasmHostHandle slots[LJ_WASMTIME_HANDLE_MAX];
+} LJWasmtimeHandleTable;
+
+typedef struct LJWasmtimeGuestContext {
+  LJWasmtimeGuestMemory memory;
+  LJWasmtimeHandleTable handles;
+} LJWasmtimeGuestContext;
+
 extern const LJWasmtimeImportSpec lj_wasmtime_host_imports[];
 extern const size_t lj_wasmtime_host_import_count;
 
@@ -175,6 +188,27 @@ int lj_wasmtime_guest_write(const LJWasmtimeGuestMemory *memory,
 int lj_wasmtime_guest_read_cstr(const LJWasmtimeGuestMemory *memory,
                                 uint64_t guest_ptr, char *dst,
                                 size_t dst_size);
+void lj_wasmtime_guest_context_init(LJWasmtimeGuestContext *ctx,
+                                    uint8_t *memory, uint64_t memory_size);
+int lj_wasmtime_guest_handle_alloc(LJWasmtimeHandleTable *handles,
+                                   LJWasmHostHandle host_handle,
+                                   uint64_t *guest_handle);
+int lj_wasmtime_guest_handle_get(const LJWasmtimeHandleTable *handles,
+                                 uint64_t guest_handle,
+                                 LJWasmHostHandle *host_handle);
+void lj_wasmtime_guest_handle_release(LJWasmtimeHandleTable *handles,
+                                      uint64_t guest_handle);
+int lj_wasmtime_guest_ffi_load(LJWasmtimeGuestContext *ctx,
+                               uint64_t name_ptr, int global,
+                               uint64_t handle_out_ptr);
+void lj_wasmtime_guest_ffi_unload(LJWasmtimeGuestContext *ctx,
+                                  uint64_t guest_handle);
+int lj_wasmtime_guest_ffi_symbol(LJWasmtimeGuestContext *ctx,
+                                 uint64_t guest_handle, uint64_t name_ptr,
+                                 uint64_t symbol_out_ptr);
+int lj_wasmtime_guest_ffi_call(LJWasmtimeGuestContext *ctx, uint64_t cts_ptr,
+                               uint64_t ct_ptr, uint64_t cc_ptr,
+                               uint64_t call_ptr);
 
 int lj_wasm_import_ffi_load(const char *name, int global,
                             LJWasmHostHandle *handle);

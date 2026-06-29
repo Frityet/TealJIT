@@ -20,6 +20,16 @@ static void store_f64(void *base, uint32_t offset, double value) {
 }
 
 #if LJ_WASMTIME_ENABLE_LIBFFI
+static uint64_t load_u64(const void *base, uint32_t offset) {
+  uint64_t value;
+  memcpy(&value, (const uint8_t *)base + offset, sizeof(value));
+  return value;
+}
+
+static void store_u64(void *base, uint32_t offset, uint64_t value) {
+  memcpy((uint8_t *)base + offset, &value, sizeof(value));
+}
+
 static int32_t load_i32(const void *base, uint32_t offset) {
   int32_t value;
   memcpy(&value, (const uint8_t *)base + offset, sizeof(value));
@@ -506,6 +516,77 @@ int main(void) {
                                  (struct CType *)&fake_ct,
                                  (struct CCallState *)fake_cc,
                                  &fake_call) == LJ_WASM_HOST_ERR);
+
+  {
+    enum {
+      GUEST_HANDLE_OUT = 8,
+      GUEST_SYMBOL_OUT = 16,
+      GUEST_LIB_NAME = 32,
+      GUEST_SYMBOL_NAME = 64,
+      GUEST_CC = 128,
+      GUEST_CALL = 256
+    };
+    uint8_t guest_import_bytes[512];
+    LJWasmtimeGuestContext guest_ctx;
+    uint8_t guest_cc[64];
+    LJWasmFFICall guest_call;
+    uint64_t guest_lib;
+    uint64_t guest_symbol;
+
+    memset(guest_import_bytes, 0, sizeof(guest_import_bytes));
+    lj_wasmtime_guest_context_init(&guest_ctx, guest_import_bytes,
+                                   sizeof(guest_import_bytes));
+    assert(lj_wasmtime_guest_write(&guest_ctx.memory, GUEST_LIB_NAME,
+                                   LJ_WASMTIME_TEST_LIBM,
+                                   strlen(LJ_WASMTIME_TEST_LIBM) + 1) ==
+           LJ_WASM_HOST_OK);
+    assert(lj_wasmtime_guest_ffi_load(&guest_ctx, GUEST_LIB_NAME, 0,
+                                      GUEST_HANDLE_OUT) == LJ_WASM_HOST_OK);
+    guest_lib = load_u64(guest_import_bytes, GUEST_HANDLE_OUT);
+    assert(guest_lib != 0);
+
+    assert(lj_wasmtime_guest_write(&guest_ctx.memory, GUEST_SYMBOL_NAME,
+                                   "cos", 4) == LJ_WASM_HOST_OK);
+    assert(lj_wasmtime_guest_ffi_symbol(&guest_ctx, guest_lib,
+                                        GUEST_SYMBOL_NAME,
+                                        GUEST_SYMBOL_OUT) ==
+           LJ_WASM_HOST_OK);
+    guest_symbol = load_u64(guest_import_bytes, GUEST_SYMBOL_OUT);
+    assert(guest_symbol != 0);
+
+    memset(guest_cc, 0, sizeof(guest_cc));
+    store_u64(guest_cc, 0, guest_symbol);
+    store_f64(guest_cc, 16, 0.0);
+    assert(lj_wasmtime_guest_write(&guest_ctx.memory, GUEST_CC, guest_cc,
+                                   sizeof(guest_cc)) == LJ_WASM_HOST_OK);
+
+    memset(&guest_call, 0, sizeof(guest_call));
+    guest_call.sig.nargs = 1;
+    guest_call.sig.rettype = LJ_WASM_SCALAR_F64;
+    guest_call.abi_version = LJ_WASM_FFI_CALL_ABI_VERSION;
+    guest_call.ccall_size = sizeof(guest_cc);
+    guest_call.func_offset = 0;
+    guest_call.ret.type = LJ_WASM_SCALAR_F64;
+    guest_call.ret.loc = LJ_WASM_FFI_LOC_FPR;
+    guest_call.ret.offset = 32;
+    guest_call.ret.size = sizeof(double);
+    guest_call.args[0].type = LJ_WASM_SCALAR_F64;
+    guest_call.args[0].loc = LJ_WASM_FFI_LOC_FPR;
+    guest_call.args[0].offset = 16;
+    guest_call.args[0].size = sizeof(double);
+    assert(lj_wasmtime_guest_write(&guest_ctx.memory, GUEST_CALL, &guest_call,
+                                   sizeof(guest_call)) == LJ_WASM_HOST_OK);
+    assert(lj_wasmtime_guest_ffi_call(&guest_ctx, 1, 2, GUEST_CC,
+                                      GUEST_CALL) == LJ_WASM_HOST_OK);
+    assert(load_f64(guest_import_bytes, GUEST_CC + guest_call.ret.offset) ==
+           1.0);
+    assert(load_u64(guest_import_bytes, GUEST_CC + guest_call.func_offset) ==
+           guest_symbol);
+
+    lj_wasmtime_guest_ffi_unload(&guest_ctx, guest_lib);
+    assert(lj_wasmtime_guest_ffi_call(&guest_ctx, 1, 2, GUEST_CC,
+                                      GUEST_CALL) == LJ_WASM_HOST_ERR);
+  }
 #endif
   handle = &fake_lua;
   assert(lj_wasm_import_jit_enter(handle, &fake_lua, &fake_base,

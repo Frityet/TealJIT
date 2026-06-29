@@ -51,6 +51,16 @@ These helpers do overflow-safe memory64 bounds checks against a host-provided
 memory view and are intended to be reused by real Wasmtime import wrappers after
 they borrow the guest memory from `Caller`.
 
+For FFI, the scaffold also exposes guest-facing wrapper helpers:
+`lj_wasmtime_guest_ffi_load`, `lj_wasmtime_guest_ffi_symbol`,
+`lj_wasmtime_guest_ffi_unload`, and `lj_wasmtime_guest_ffi_call`. These wrappers
+read guest strings/descriptors through `LJWasmtimeGuestMemory`, translate
+guest-visible `u64` handle IDs through `LJWasmtimeHandleTable`, keep native
+handles out of guest memory, and call the raw `lj_wasm_import_*` ABI functions.
+`lj_wasmtime_guest_ffi_call` copies the guest `CCallState`, substitutes the
+native symbol handle only in the temporary copy, calls the scalar backend, then
+writes the updated frame back with the guest handle ID restored.
+
 Host handles should be opaque guest-visible IDs or table indexes rather than raw
 native pointers. The guest stores them in pointer-sized slots, but the host owns
 the backing objects and lifetime.
@@ -96,4 +106,5 @@ make -C wasm/host/wasmtime check
 This checks that the scaffold is valid C and runs the host hook contract test
 without requiring Rust, Cargo, or a Wasmtime SDK. With libffi available, the
 contract test also loads `libm`, calls `cos(0.0)`, resolves default-namespace
-`abs`, and checks descriptor rejection cases through the descriptor path.
+`abs`, checks descriptor rejection cases, and runs a translated guest-memory FFI
+call through the guest wrapper path.
