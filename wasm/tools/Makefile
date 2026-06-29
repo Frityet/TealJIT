@@ -12,12 +12,13 @@ LDLIBS ?= -lm -ldl
 OUT ?= /tmp/lj-wasm-nyi-trace.wasm
 OUT_IR ?= /tmp/lj-wasm-ir-trace.wasm
 OUT_NUMERIC ?= /tmp/lj-wasm-numeric-for-trace.wasm
+OUT_ARRAY_STORE ?= /tmp/lj-wasm-array-store-trace.wasm
 OUT_FALLBACK ?= /tmp/lj-wasm-fallback-trace.wasm
 WASM64_CHECK_DIR ?= /tmp/lj-wasm64-support-check
 WASM64_SKIP_SRC :=
 WASM64_CORE_SRC := $(filter-out $(WASM64_SKIP_SRC),$(notdir $(wildcard $(SRC)/*.c)))
 
-.PHONY: check trace-module-check trace-ir-module-check trace-numeric-for-module-check trace-fallback-module-check trace-enter-contract-check wasm64-support-check clean
+.PHONY: check trace-module-check trace-ir-module-check trace-numeric-for-module-check trace-array-store-module-check trace-fallback-module-check trace-enter-contract-check wasm64-support-check clean
 
 wasm_nyi_trace_module: wasm_nyi_trace_module.c $(SRC)/libluajit.a
 	$(CC) $(CFLAGS) -o $@ wasm_nyi_trace_module.c $(SRC)/libluajit.a $(LDLIBS)
@@ -28,13 +29,16 @@ wasm_trace_ir_module: wasm_trace_ir_module.c $(SRC)/libluajit.a
 wasm_trace_numeric_for_module: wasm_trace_numeric_for_module.c $(SRC)/libluajit.a
 	$(CC) $(CFLAGS) -o $@ wasm_trace_numeric_for_module.c $(SRC)/libluajit.a $(LDLIBS)
 
+wasm_trace_array_store_module: wasm_trace_array_store_module.c $(SRC)/libluajit.a
+	$(CC) $(CFLAGS) -o $@ wasm_trace_array_store_module.c $(SRC)/libluajit.a $(LDLIBS)
+
 wasm_trace_fallback_module: wasm_trace_fallback_module.c $(SRC)/libluajit.a
 	$(CC) $(CFLAGS) -o $@ wasm_trace_fallback_module.c $(SRC)/libluajit.a $(LDLIBS)
 
 wasm_trace_enter_contract: wasm_trace_enter_contract.c $(SRC)/libluajit.a
 	$(CC) $(CFLAGS) -o $@ wasm_trace_enter_contract.c $(SRC)/libluajit.a $(LDLIBS)
 
-check: trace-module-check trace-ir-module-check trace-numeric-for-module-check trace-fallback-module-check trace-enter-contract-check wasm64-support-check
+check: trace-module-check trace-ir-module-check trace-numeric-for-module-check trace-array-store-module-check trace-fallback-module-check trace-enter-contract-check wasm64-support-check
 
 trace-module-check: wasm_nyi_trace_module
 	./wasm_nyi_trace_module > $(OUT)
@@ -75,6 +79,19 @@ trace-numeric-for-module-check: wasm_trace_numeric_for_module
 	$(WASM_OBJDUMP) -d $(OUT_NUMERIC) | grep -q 'i64.lt_u'
 	$(WASM_OBJDUMP) -d $(OUT_NUMERIC) | grep -q 'i32.const 100'
 
+trace-array-store-module-check: wasm_trace_array_store_module
+	./wasm_trace_array_store_module > $(OUT_ARRAY_STORE)
+	test `wc -c < $(OUT_ARRAY_STORE)` -gt 8
+	$(LLVM_OBJDUMP) -h $(OUT_ARRAY_STORE) >/dev/null
+	$(WASM_VALIDATE) $(WASM_VALIDATE_FLAGS) $(OUT_ARRAY_STORE)
+	$(WASM_OBJDUMP) -x $(OUT_ARRAY_STORE) | grep -q 'i64 <- env.memory'
+	$(WASM_OBJDUMP) -d $(OUT_ARRAY_STORE) | grep -q 'i32.trunc_f64_s'
+	$(WASM_OBJDUMP) -d $(OUT_ARRAY_STORE) | grep -q 'f64.convert_i32_s'
+	$(WASM_OBJDUMP) -d $(OUT_ARRAY_STORE) | grep -q 'f64.store'
+	$(WASM_OBJDUMP) -d $(OUT_ARRAY_STORE) | grep -q 'i64.and'
+	$(WASM_OBJDUMP) -d $(OUT_ARRAY_STORE) | grep -q 'i32.ge_u'
+	$(WASM_OBJDUMP) -d $(OUT_ARRAY_STORE) | grep -q 'i32.const 100'
+
 trace-fallback-module-check: wasm_trace_fallback_module
 	./wasm_trace_fallback_module > $(OUT_FALLBACK)
 	test `wc -c < $(OUT_FALLBACK)` -gt 8
@@ -93,4 +110,4 @@ wasm64-support-check:
 	done
 
 clean:
-	rm -f wasm_nyi_trace_module wasm_trace_ir_module wasm_trace_numeric_for_module wasm_trace_fallback_module wasm_trace_enter_contract
+	rm -f wasm_nyi_trace_module wasm_trace_ir_module wasm_trace_numeric_for_module wasm_trace_array_store_module wasm_trace_fallback_module wasm_trace_enter_contract
