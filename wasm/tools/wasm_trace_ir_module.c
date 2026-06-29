@@ -39,7 +39,7 @@ static void setguard(GCtrace *T, IRRef ref, IROp op, IRType type,
 
 int main(void)
 {
-  enum { NIR = 9 };
+  enum { NIR = 11 };
   lua_State *L = luaL_newstate();
   IRIns *ir = (IRIns *)calloc(REF_FIRST + NIR, sizeof(IRIns));
   GCtrace T;
@@ -59,12 +59,14 @@ int main(void)
   setir(&T, REF_FIRST+0, IR_SLOAD, IRT_INT, 3, IRSLOAD_READONLY);
   setir(&T, REF_FIRST+1, IR_ADD, IRT_INT, REF_FIRST+0, REF_FIRST+0);
   setguard(&T, REF_FIRST+2, IR_LE, IRT_INT, REF_FIRST+1, REF_FIRST+1);
-  setir(&T, REF_FIRST+3, IR_SLOAD, IRT_NUM, 2, IRSLOAD_READONLY);
-  setir(&T, REF_FIRST+4, IR_ADD, IRT_NUM, REF_FIRST+3, REF_FIRST+3);
-  setguard(&T, REF_FIRST+5, IR_LE, IRT_NUM, REF_FIRST+4, REF_FIRST+4);
-  setir(&T, REF_FIRST+6, IR_LOOP, IRT_NIL, 0, 0);
-  setir(&T, REF_FIRST+7, IR_PHI, IRT_INT, REF_FIRST+0, REF_FIRST+1);
-  setir(&T, REF_FIRST+8, IR_PHI, IRT_NUM, REF_FIRST+3, REF_FIRST+4);
+  setguard(&T, REF_FIRST+3, IR_SLOAD, IRT_INT, 4, IRSLOAD_TYPECHECK);
+  setir(&T, REF_FIRST+4, IR_SLOAD, IRT_NUM, 2, IRSLOAD_READONLY);
+  setir(&T, REF_FIRST+5, IR_ADD, IRT_NUM, REF_FIRST+4, REF_FIRST+4);
+  setguard(&T, REF_FIRST+6, IR_LE, IRT_NUM, REF_FIRST+5, REF_FIRST+5);
+  setguard(&T, REF_FIRST+7, IR_SLOAD, IRT_NUM, 5, IRSLOAD_TYPECHECK);
+  setir(&T, REF_FIRST+8, IR_LOOP, IRT_NIL, 0, 0);
+  setir(&T, REF_FIRST+9, IR_PHI, IRT_INT, REF_FIRST+0, REF_FIRST+1);
+  setir(&T, REF_FIRST+10, IR_PHI, IRT_NUM, REF_FIRST+4, REF_FIRST+5);
 
   lj_buf_init(L, &sb);
   lowered = lj_wasm_jit_build_trace(L, &T, &sb);

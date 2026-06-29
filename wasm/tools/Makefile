@@ -46,6 +46,12 @@ trace-ir-module-check: wasm_trace_ir_module
 	$(WASM_OBJDUMP) -x $(OUT_IR) | grep -q 'i64 <- env.memory'
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i32.load'
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'f64.load'
+	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i64.load'
+	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i64.shr_u'
+	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i64.eq'
+	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i64.lt_u'
+	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i32.wrap_i64'
+	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'f64.reinterpret_i64'
 
 trace-fallback-module-check: wasm_trace_fallback_module
 	./wasm_trace_fallback_module > $(OUT_FALLBACK)
