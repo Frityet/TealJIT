@@ -46,6 +46,8 @@ void lj_mcode_sync(void *start, void *end)
 #endif
 #if LJ_TARGET_X86ORX64
   UNUSED(start); UNUSED(end);
+#elif LJ_TARGET_WASM
+  UNUSED(start); UNUSED(end);
 #elif LJ_TARGET_WINDOWS
   FlushInstructionCache(GetCurrentProcess(), start, (char *)end-(char *)start);
 #elif LJ_TARGET_IOS
@@ -160,6 +162,29 @@ static void mcode_setprot(jit_State *J, void *p, size_t sz, int prot)
 #else
   UNUSED(J); UNUSED(p); UNUSED(sz); UNUSED(prot);
 #endif
+}
+
+#elif LJ_TARGET_WASM
+
+#define MCPROT_RW	0
+#define MCPROT_RX	0
+#define MCPROT_RWX	0
+
+static void *mcode_alloc_at(uintptr_t hint, size_t sz, int prot)
+{
+  UNUSED(hint); UNUSED(prot);
+  return malloc(sz);
+}
+
+static void mcode_free(void *p, size_t sz)
+{
+  UNUSED(sz);
+  free(p);
+}
+
+static void mcode_setprot(jit_State *J, void *p, size_t sz, int prot)
+{
+  UNUSED(J); UNUSED(p); UNUSED(sz); UNUSED(prot);
 }
 
 #else

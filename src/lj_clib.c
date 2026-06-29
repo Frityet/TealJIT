@@ -17,6 +17,9 @@
 #include "lj_cdata.h"
 #include "lj_clib.h"
 #include "lj_strfmt.h"
+#if LJ_TARGET_WASM
+#include "lj_wasm_host.h"
+#endif
 
 /* -- OS-specific functions ----------------------------------------------- */
 
@@ -276,6 +279,39 @@ static void *clib_getsym(CLibrary *cl, const char *name)
     p = (void *)GetProcAddress((HINSTANCE)cl->handle, name);
   }
   return p;
+}
+
+#elif LJ_TARGET_WASM
+
+#define CLIB_DEFHANDLE	NULL
+
+LJ_NORET LJ_NOINLINE static void clib_error(lua_State *L, const char *fmt,
+					    const char *name)
+{
+  lj_err_callermsg(L, lj_strfmt_pushf(L, fmt, name,
+				      "WebAssembly host import failed"));
+}
+
+static void *clib_loadlib(lua_State *L, const char *name, int global)
+{
+  LJWasmHostHandle h = NULL;
+  if (lj_wasm_host_ffi_load(name, global, &h) != LJ_WASM_HOST_OK || !h)
+    clib_error(L, "cannot load host library " LUA_QS ": %s", name);
+  return h;
+}
+
+static void clib_unloadlib(CLibrary *cl)
+{
+  if (cl->handle)
+    lj_wasm_host_ffi_unload(cl->handle);
+}
+
+static void *clib_getsym(CLibrary *cl, const char *name)
+{
+  LJWasmHostHandle sym = NULL;
+  if (lj_wasm_host_ffi_symbol(cl->handle, name, &sym) != LJ_WASM_HOST_OK)
+    return NULL;
+  return sym;
 }
 
 #else

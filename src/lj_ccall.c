@@ -15,6 +15,9 @@
 #include "lj_cdata.h"
 #include "lj_ccall.h"
 #include "lj_trace.h"
+#if LJ_TARGET_WASM
+#include "lj_wasm_host.h"
+#endif
 
 /* Target-specific handling of register arguments. */
 #if LJ_TARGET_X86
@@ -369,6 +372,39 @@
     sp = (uint8_t *)&cc->fpr[0].f;
 #endif
 
+#elif LJ_TARGET_WASM
+/* -- WASM64 host-assisted calling convention ----------------------------- */
+
+#define CCALL_HANDLE_STRUCTRET \
+  cc->retref = 1; \
+  cc->gpr[ngpr++] = (GPRArg)dp;
+
+#define CCALL_HANDLE_COMPLEXRET CCALL_HANDLE_STRUCTRET
+
+#define CCALL_HANDLE_COMPLEXRET2 \
+  if (!cc->retref) memcpy(dp, sp, ctr->size);
+
+#define CCALL_HANDLE_STRUCTARG \
+  rp = cdataptr(lj_cdata_new(cts, did, sz)); \
+  sz = CTSIZE_PTR;
+
+#define CCALL_HANDLE_COMPLEXARG \
+  isfp = 1;
+
+#define CCALL_HANDLE_REGARG \
+  if (isfp) { \
+    if (nfpr + n <= CCALL_NARG_FPR) { \
+      dp = &cc->fpr[nfpr]; \
+      nfpr += n; \
+      goto done; \
+    } \
+  } else { \
+    if (ngpr + n <= maxgpr) { \
+      dp = &cc->gpr[ngpr]; \
+      ngpr += n; \
+      goto done; \
+    } \
+  }
 
 #elif LJ_TARGET_PPC
 /* -- PPC calling conventions --------------------------------------------- */
@@ -1170,7 +1206,10 @@ static int ccall_set_args(lua_State *L, CTState *cts, CType *ct,
   if ((int32_t)nsp < 0) nsp = 0;
 #endif
 
-#if LJ_TARGET_X64 || (LJ_TARGET_PPC && !LJ_ABI_SOFTFP)
+#if LJ_TARGET_WASM
+  cc->ngpr = ngpr;
+  cc->nfpr = nfpr;
+#elif LJ_TARGET_X64 || (LJ_TARGET_PPC && !LJ_ABI_SOFTFP)
   cc->nfpr = nfpr;  /* Required for vararg functions. */
 #endif
   cc->nsp = (nsp + CTSIZE_PTR-1) & ~(CTSIZE_PTR-1);
@@ -1238,7 +1277,13 @@ int lj_ccall_func(lua_State *L, GCcdata *cd)
     cc.func = (void (*)(void))cdata_getptr(cdataptr(cd), sz);
     gcsteps = ccall_set_args(L, cts, ct, &cc);
     cts->cb.slot = ~0u;
+#if LJ_TARGET_WASM
+    ct = ctype_get(cts, id);  /* Table may have been reallocated. */
+    if (lj_wasm_host_ffi_call(cts, ct, &cc) != LJ_WASM_HOST_OK)
+      lj_err_caller(L, LJ_ERR_FFI_NYICALL);
+#else
     lj_vm_ffi_call(&cc);
+#endif
     if (cts->cb.slot != ~0u) {  /* Blacklist function that called a callback. */
       TValue tv;
       tv.u64 = ((uintptr_t)(void *)cc.func >> 2) | U64x(800000000, 00000000);

@@ -164,7 +164,7 @@ typedef enum {
 } PostProc;
 
 /* Machine code type. */
-#if LJ_TARGET_X86ORX64
+#if LJ_TARGET_X86ORX64 || LJ_TARGET_WASM
 typedef uint8_t MCode;
 #else
 typedef uint32_t MCode;

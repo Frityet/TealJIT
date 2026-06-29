@@ -31,6 +31,8 @@
 #define LUAJIT_ARCH_mips32	6
 #define LUAJIT_ARCH_MIPS64	7
 #define LUAJIT_ARCH_mips64	7
+#define LUAJIT_ARCH_WASM64	8
+#define LUAJIT_ARCH_wasm64	8
 
 /* Target OS. */
 #define LUAJIT_OS_OTHER		0
@@ -65,6 +67,8 @@
 #define LUAJIT_TARGET	LUAJIT_ARCH_MIPS64
 #elif defined(__mips__) || defined(__mips) || defined(__MIPS__) || defined(__MIPS)
 #define LUAJIT_TARGET	LUAJIT_ARCH_MIPS32
+#elif defined(__wasm64__)
+#define LUAJIT_TARGET	LUAJIT_ARCH_WASM64
 #else
 #error "Architecture not supported (in this version), see: https://luajit.org/status.html#architectures"
 #endif
@@ -126,6 +130,12 @@
 #define LJ_TARGET_BSD		(LUAJIT_OS == LUAJIT_OS_BSD)
 #define LJ_TARGET_POSIX		(LUAJIT_OS > LUAJIT_OS_WINDOWS)
 #define LJ_TARGET_DLOPEN	LJ_TARGET_POSIX
+
+#if defined(__wasi__)
+#define LJ_TARGET_WASI		1
+#else
+#define LJ_TARGET_WASI		0
+#endif
 
 #if (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE) || LUAJIT_TARGET_IPHONE
 #define LJ_TARGET_IOS		1
@@ -474,6 +484,22 @@
 #else
 #define LJ_ARCH_VERSION		10
 #endif
+
+#elif LUAJIT_TARGET == LUAJIT_ARCH_WASM64
+
+#define LJ_ARCH_NAME		"wasm64"
+#define LJ_ARCH_BITS		64
+#define LJ_ARCH_ENDIAN		LUAJIT_LE
+#define LJ_TARGET_WASM		1
+#define LJ_TARGET_WASM64	1
+#define LJ_TARGET_EHRETREG	0
+#define LJ_TARGET_EHRAREG	0
+#define LJ_TARGET_MASKSHIFT	1
+#define LJ_TARGET_MASKROT	1
+#define LJ_TARGET_UNALIGNED	1
+#define LJ_TARGET_GC64		1
+#define LJ_PAGESIZE		65536
+#define LJ_ARCH_NUMMODE		LJ_NUMMODE_DUAL
 
 #else
 #error "No target architecture defined"

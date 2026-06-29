@@ -86,6 +86,21 @@ typedef union FPRArg {
   struct { LJ_ENDIAN_LOHI(uint32_t lo; , uint32_t hi;) };
 } FPRArg;
 
+#elif LJ_TARGET_WASM
+
+#define CCALL_NARG_GPR		8
+#define CCALL_NARG_FPR		8
+#define CCALL_NRET_GPR		2
+#define CCALL_NRET_FPR		2
+#define CCALL_SPS_FREE		0
+
+typedef intptr_t GPRArg;
+typedef union FPRArg {
+  double d;
+  float f[2];
+  uint64_t u64;
+} FPRArg;
+
 #elif LJ_TARGET_PPC
 
 #define CCALL_NARG_GPR		8
@@ -168,7 +183,7 @@ typedef LJ_ALIGN(CCALL_ALIGN_CALLSTATE) struct CCallState {
   uint32_t spadj;		/* Stack pointer adjustment. */
   uint8_t nsp;			/* Number of bytes on stack. */
   uint8_t retref;		/* Return value by reference. */
-#if LJ_TARGET_X64
+#if LJ_TARGET_X64 || LJ_TARGET_WASM
   uint8_t ngpr;			/* Number of arguments in GPRs. */
   uint8_t nfpr;			/* Number of arguments in FPRs. */
 #elif LJ_TARGET_X86
