@@ -52,16 +52,9 @@ def instantiate(path):
     return store, memory, entry
 
 
-def main(argv):
-    if len(argv) != 2:
-        raise SystemExit("usage: wasm_trace_runtime_check.py TRACE_MODULE.wasm")
-
-    store, memory, entry = instantiate(argv[1])
-    base = 1024
-    exit_state = 4096
-
+def check_normal_exit(memory, store, entry, base, exit_state, start, end_index):
     write_f64(memory, store, base + 0, 0.0)  # accumulator SLOAD #2
-    write_f64(memory, store, base + 8, 1.0)  # loop index SLOAD #3
+    write_f64(memory, store, base + 8, start)  # loop index SLOAD #3
     ok = i32_result(entry(store, 0, base, exit_state, 0))
     if ok != 2:
         raise SystemExit(f"expected loop guard failure status 2, got {ok}")
@@ -69,8 +62,28 @@ def main(argv):
     idx = read_i64(memory, store, exit_state + EXIT_GPR2)
     if acc != 5050.0:
         raise SystemExit(f"expected exit-state accumulator 5050.0, got {acc}")
-    if idx != 101:
-        raise SystemExit(f"expected exit-state loop index 101, got {idx}")
+    if idx != end_index:
+        raise SystemExit(f"expected exit-state loop index {end_index}, got {idx}")
+
+
+def main(argv):
+    if len(argv) not in (2, 3):
+        raise SystemExit(
+            "usage: wasm_trace_runtime_check.py TRACE_MODULE.wasm [up|down]"
+        )
+
+    mode = argv[2] if len(argv) == 3 else "up"
+    store, memory, entry = instantiate(argv[1])
+    base = 1024
+    exit_state = 4096
+
+    if mode == "up":
+        check_normal_exit(memory, store, entry, base, exit_state, 1.0, 101)
+    elif mode == "down":
+        check_normal_exit(memory, store, entry, base, exit_state, 100.0, 0)
+        return
+    else:
+        raise SystemExit(f"unknown trace runtime mode {mode!r}")
 
     write_i32_tvalue(memory, store, base + 0, 0)
     failed = i32_result(entry(store, 0, base, exit_state, 0))
