@@ -251,10 +251,12 @@ static int wasm_trace_supported(const GCtrace *T)
     case IR_SLOAD:
       if (!(irt_isint(ir->t) || irt_isnum(ir->t)))
 	return 0;
-      if ((ir->op2 & (IRSLOAD_PARENT|IRSLOAD_FRAME|IRSLOAD_CONVERT|
-		      IRSLOAD_KEYINDEX)))
+      if ((ir->op2 & (IRSLOAD_PARENT|IRSLOAD_FRAME|IRSLOAD_KEYINDEX)))
 	return 0;
       if ((ir->op2 & IRSLOAD_TYPECHECK) && !irt_isguard(ir->t))
+	return 0;
+      if ((ir->op2 & (IRSLOAD_CONVERT|IRSLOAD_TYPECHECK)) ==
+	  (IRSLOAD_CONVERT|IRSLOAD_TYPECHECK))
 	return 0;
       break;
     case IR_ADD:
@@ -384,6 +386,22 @@ static int wasm_emit_sload(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
   uint8_t type = wasm_ir_valtype(ir);
   SBuf *body = ctx->body;
   wasm_emit_addr_const_add(body, wasm_sload_ofs(ir));
+  if ((ir->op2 & IRSLOAD_CONVERT)) {
+    if (type == LJ_WASM_TYPE_F64) {
+      lj_wasm_putu8(body, LJ_WASM_OP_I32_LOAD);
+      lj_wasm_putmemarg(body, 2, 0);
+      lj_wasm_putu8(body, LJ_WASM_OP_F64_CONVERT_I32_S);
+    } else if (type == LJ_WASM_TYPE_I32) {
+      lj_wasm_putu8(body, LJ_WASM_OP_F64_LOAD);
+      lj_wasm_putmemarg(body, 3, 0);
+      lj_wasm_putu8(body, LJ_WASM_OP_I32_TRUNC_F64_S);
+    } else {
+      return 0;
+    }
+    lj_wasm_putu8(body, LJ_WASM_OP_LOCAL_SET);
+    lj_wasm_putu32v(body, wasm_ir_local(ref));
+    return 1;
+  }
   if ((ir->op2 & IRSLOAD_TYPECHECK)) {
     lj_wasm_putu8(body, LJ_WASM_OP_I64_LOAD);
     lj_wasm_putmemarg(body, 3, 0);
