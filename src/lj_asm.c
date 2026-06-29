@@ -74,6 +74,7 @@ void lj_asm_trace(jit_State *J, GCtrace *T)
   SnapNo i;
 
   asm_wasm_trim_nops(T);
+  lj_wasm_jit_assign_exitstate(T);
   J->curfinal = lj_trace_alloc(J->L, T);
 
   token = asm_wasm_reserve_token(J);

@@ -13,6 +13,8 @@ except ImportError as exc:
     ) from exc
 
 LJ_TISNUM_TAG_HI = 0xFFF90000
+EXIT_FPR4 = 32
+EXIT_GPR2 = 144
 
 
 def i32_result(value):
@@ -22,6 +24,14 @@ def i32_result(value):
 
 def write_f64(memory, store, offset, value):
     memory.write(store, struct.pack("<d", value), offset)
+
+
+def read_f64(memory, store, offset):
+    return struct.unpack("<d", memory.read(store, offset, offset + 8))[0]
+
+
+def read_i64(memory, store, offset):
+    return struct.unpack("<q", memory.read(store, offset, offset + 8))[0]
 
 
 def write_i32_tvalue(memory, store, offset, value):
@@ -55,6 +65,12 @@ def main(argv):
     ok = i32_result(entry(store, 0, base, exit_state, 0))
     if ok != 2:
         raise SystemExit(f"expected loop guard failure status 2, got {ok}")
+    acc = read_f64(memory, store, exit_state + EXIT_FPR4)
+    idx = read_i64(memory, store, exit_state + EXIT_GPR2)
+    if acc != 5050.0:
+        raise SystemExit(f"expected exit-state accumulator 5050.0, got {acc}")
+    if idx != 101:
+        raise SystemExit(f"expected exit-state loop index 101, got {idx}")
 
     write_i32_tvalue(memory, store, base + 0, 0)
     failed = i32_result(entry(store, 0, base, exit_state, 0))

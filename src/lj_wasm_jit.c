@@ -8,6 +8,7 @@
 
 #include "lj_obj.h"
 #include "lj_buf.h"
+#include "lj_target.h"
 #include "lj_wasm_emit.h"
 #if LJ_TARGET_WASM
 #include "lj_wasm_host.h"
@@ -19,6 +20,17 @@
 #define WASM_TRACE_PARAM_EXITSTATE	2u
 #define WASM_TRACE_PARAM_EXITNO		3u
 #define WASM_TRACE_FIRST_LOCAL		4u
+
+#define WASM_EXIT_GPR_FIRST		0u
+#define WASM_EXIT_FPR_FIRST		16u
+#define WASM_EXIT_NUM_GPR		16u
+#define WASM_EXIT_NUM_FPR		16u
+#define WASM_EXIT_FPR_OFS		0u
+#define WASM_EXIT_GPR_OFS		(WASM_EXIT_FPR_OFS + \
+					 WASM_EXIT_NUM_FPR * 8u)
+#define WASM_EXIT_SPILL_OFS		(WASM_EXIT_GPR_OFS + \
+					 WASM_EXIT_NUM_GPR * 8u)
+#define WASM_EXIT_FIRST_SPILL		2u
 
 static void wasm_sbuf_free(lua_State *L, SBuf *sb)
 {
@@ -127,6 +139,59 @@ static uint8_t wasm_ir_valtype(IRIns *ir)
     return LJ_WASM_TYPE_I64;
   else
     return LJ_WASM_TYPE_I32;
+}
+
+static int wasm_ir_has_value(IRIns *ir)
+{
+  switch ((IROp)ir->o) {
+  case IR_SLOAD:
+  case IR_FLOAD:
+  case IR_AREF:
+  case IR_ALOAD:
+  case IR_ADD:
+  case IR_SUB:
+  case IR_MUL:
+  case IR_MOD:
+  case IR_CONV:
+  case IR_PHI:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+void lj_wasm_jit_assign_exitstate(GCtrace *T)
+{
+  uint32_t gpr = 0, fpr = 0, spill = WASM_EXIT_FIRST_SPILL;
+  IRRef ref;
+  for (ref = REF_FIRST; ref < T->nins; ref++) {
+    IRIns *ir = &T->ir[ref];
+    ir->prev = REGSP_INIT;
+    if (!wasm_ir_has_value(ir))
+      continue;
+    if (irt_isnum(ir->t)) {
+      if (fpr < WASM_EXIT_NUM_FPR) {
+	ir->prev = (uint16_t)REGSP(WASM_EXIT_FPR_FIRST + fpr, 0);
+	fpr++;
+      } else {
+	spill = (spill + 1u) & ~1u;
+	ir->prev = (uint16_t)REGSP(RID_INIT, spill);
+	spill += 2u;
+      }
+    } else if (irt_isint(ir->t) || irt_istab(ir->t) ||
+	       wasm_ir_valtype(ir) == LJ_WASM_TYPE_I64) {
+      if (gpr < WASM_EXIT_NUM_GPR) {
+	ir->prev = (uint16_t)REGSP(WASM_EXIT_GPR_FIRST + gpr, 0);
+	gpr++;
+      } else {
+	uint32_t slots = wasm_ir_valtype(ir) == LJ_WASM_TYPE_I64 ? 2u : 1u;
+	if (slots == 2u)
+	  spill = (spill + 1u) & ~1u;
+	ir->prev = (uint16_t)REGSP(RID_INIT, spill);
+	spill += slots;
+      }
+    }
+  }
 }
 
 static uint32_t wasm_ir_local(IRRef ref)
@@ -422,11 +487,113 @@ static uint32_t wasm_guard_exitno(WasmTraceCtx *ctx, IRRef ref)
   return ctx->next_exit++;
 }
 
-static void wasm_emit_guard_exit(WasmTraceCtx *ctx, IRRef ref)
+static int wasm_emit_exitstate_store_ref(WasmTraceCtx *ctx, IRRef ref)
 {
+  const GCtrace *T = ctx->T;
+  IRIns *ir;
+  RegSP rs;
+  uint8_t type;
+  uint64_t ofs;
+  SBuf *body = ctx->body;
+
+  if (!wasm_ref_isknown(T, ref) || irref_isk(ref))
+    return 1;
+
+  ir = &T->ir[ref];
+  if (!wasm_ir_has_value(ir))
+    return 1;
+
+  rs = ir->prev;
+  if (!regsp_used(rs))
+    return 0;
+
+  type = wasm_ir_valtype(ir);
+  if (ra_hasspill(regsp_spill(rs))) {
+    ofs = WASM_EXIT_SPILL_OFS + (uint64_t)regsp_spill(rs) * 4u;
+    lj_wasm_putu8(body, LJ_WASM_OP_LOCAL_GET);
+    lj_wasm_putu32v(body, WASM_TRACE_PARAM_EXITSTATE);
+    if (type == LJ_WASM_TYPE_F64) {
+      if (!wasm_emit_ref(ctx, ref, LJ_WASM_TYPE_F64))
+	return 0;
+      lj_wasm_putu8(body, LJ_WASM_OP_F64_STORE);
+      lj_wasm_putmemarg(body, 3, ofs);
+    } else if (type == LJ_WASM_TYPE_I64) {
+      if (!wasm_emit_ref(ctx, ref, LJ_WASM_TYPE_I64))
+	return 0;
+      lj_wasm_putu8(body, LJ_WASM_OP_I64_STORE);
+      lj_wasm_putmemarg(body, 3, ofs);
+    } else if (type == LJ_WASM_TYPE_I32) {
+      if (!wasm_emit_ref(ctx, ref, LJ_WASM_TYPE_I32))
+	return 0;
+      lj_wasm_putu8(body, LJ_WASM_OP_I32_STORE);
+      lj_wasm_putmemarg(body, 2, ofs);
+    } else {
+      return 0;
+    }
+    return 1;
+  }
+
+  if (regsp_reg(rs) >= WASM_EXIT_FPR_FIRST) {
+    ofs = WASM_EXIT_FPR_OFS +
+	  (uint64_t)(regsp_reg(rs) - WASM_EXIT_FPR_FIRST) * 8u;
+    if (type != LJ_WASM_TYPE_F64)
+      return 0;
+    lj_wasm_putu8(body, LJ_WASM_OP_LOCAL_GET);
+    lj_wasm_putu32v(body, WASM_TRACE_PARAM_EXITSTATE);
+    if (!wasm_emit_ref(ctx, ref, LJ_WASM_TYPE_F64))
+      return 0;
+    lj_wasm_putu8(body, LJ_WASM_OP_F64_STORE);
+    lj_wasm_putmemarg(body, 3, ofs);
+  } else {
+    ofs = WASM_EXIT_GPR_OFS +
+	  (uint64_t)(regsp_reg(rs) - WASM_EXIT_GPR_FIRST) * 8u;
+    lj_wasm_putu8(body, LJ_WASM_OP_LOCAL_GET);
+    lj_wasm_putu32v(body, WASM_TRACE_PARAM_EXITSTATE);
+    if (type == LJ_WASM_TYPE_I64) {
+      if (!wasm_emit_ref(ctx, ref, LJ_WASM_TYPE_I64))
+	return 0;
+    } else if (type == LJ_WASM_TYPE_I32) {
+      if (!wasm_emit_ref(ctx, ref, LJ_WASM_TYPE_I32))
+	return 0;
+      lj_wasm_putu8(body, LJ_WASM_OP_I64_EXTEND_I32_S);
+    } else {
+      return 0;
+    }
+    lj_wasm_putu8(body, LJ_WASM_OP_I64_STORE);
+    lj_wasm_putmemarg(body, 3, ofs);
+  }
+  return 1;
+}
+
+static int wasm_emit_exitstate(WasmTraceCtx *ctx, uint32_t exitno)
+{
+  const GCtrace *T = ctx->T;
+  IRRef ref;
+  if (T->snap != NULL && exitno < T->nsnap) {
+    SnapShot *snap = &T->snap[exitno];
+    SnapEntry *map = &T->snapmap[snap->mapofs];
+    MSize n;
+    for (n = 0; n < snap->nent; n++)
+      if (!wasm_emit_exitstate_store_ref(ctx, snap_ref(map[n])))
+	return 0;
+    return 1;
+  }
+
+  for (ref = REF_FIRST; ref < T->nins; ref++)
+    if (!wasm_emit_exitstate_store_ref(ctx, ref))
+      return 0;
+  return 1;
+}
+
+static int wasm_emit_guard_exit(WasmTraceCtx *ctx, IRRef ref)
+{
+  uint32_t exitno = wasm_guard_exitno(ctx, ref);
+  if (!wasm_emit_exitstate(ctx, exitno))
+    return 0;
   lj_wasm_putu8(ctx->body, LJ_WASM_OP_I32_CONST);
-  lj_wasm_puti32v(ctx->body, (int32_t)wasm_guard_exitno(ctx, ref));
+  lj_wasm_puti32v(ctx->body, (int32_t)exitno);
   lj_wasm_putu8(ctx->body, LJ_WASM_OP_RETURN);
+  return 1;
 }
 
 static int wasm_emit_abc_guard(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
@@ -437,7 +604,8 @@ static int wasm_emit_abc_guard(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
   lj_wasm_putu8(ctx->body, LJ_WASM_OP_I32_GE_U);
   lj_wasm_putu8(ctx->body, LJ_WASM_OP_IF);
   lj_wasm_putu8(ctx->body, LJ_WASM_BLOCKTYPE_EMPTY);
-  wasm_emit_guard_exit(ctx, ref);
+  if (!wasm_emit_guard_exit(ctx, ref))
+    return 0;
   lj_wasm_putu8(ctx->body, LJ_WASM_OP_END);
   return 1;
 }
@@ -481,7 +649,8 @@ static int wasm_emit_aload(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
     lj_wasm_putu8(body, LJ_WASM_OP_I32_EQZ);
     lj_wasm_putu8(body, LJ_WASM_OP_IF);
     lj_wasm_putu8(body, LJ_WASM_BLOCKTYPE_EMPTY);
-    wasm_emit_guard_exit(ctx, ref);
+    if (!wasm_emit_guard_exit(ctx, ref))
+      return 0;
     lj_wasm_putu8(body, LJ_WASM_OP_END);
 
     lj_wasm_putu8(body, LJ_WASM_OP_LOCAL_GET);
@@ -525,7 +694,8 @@ static int wasm_emit_le_guard(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
   lj_wasm_putu8(ctx->body, LJ_WASM_OP_I32_EQZ);
   lj_wasm_putu8(ctx->body, LJ_WASM_OP_IF);
   lj_wasm_putu8(ctx->body, LJ_WASM_BLOCKTYPE_EMPTY);
-  wasm_emit_guard_exit(ctx, ref);
+  if (!wasm_emit_guard_exit(ctx, ref))
+    return 0;
   lj_wasm_putu8(ctx->body, LJ_WASM_OP_END);
   return 1;
 }
@@ -543,7 +713,8 @@ static int wasm_emit_eq_guard(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
   lj_wasm_putu8(ctx->body, LJ_WASM_OP_I32_EQZ);
   lj_wasm_putu8(ctx->body, LJ_WASM_OP_IF);
   lj_wasm_putu8(ctx->body, LJ_WASM_BLOCKTYPE_EMPTY);
-  wasm_emit_guard_exit(ctx, ref);
+  if (!wasm_emit_guard_exit(ctx, ref))
+    return 0;
   lj_wasm_putu8(ctx->body, LJ_WASM_OP_END);
   return 1;
 }
@@ -628,7 +799,8 @@ static int wasm_emit_sload(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
       lj_wasm_putu8(body, LJ_WASM_OP_I32_EQZ);
       lj_wasm_putu8(body, LJ_WASM_OP_IF);
       lj_wasm_putu8(body, LJ_WASM_BLOCKTYPE_EMPTY);
-      wasm_emit_guard_exit(ctx, ref);
+      if (!wasm_emit_guard_exit(ctx, ref))
+	return 0;
       lj_wasm_putu8(body, LJ_WASM_OP_END);
     }
 
@@ -675,7 +847,8 @@ static int wasm_emit_sload(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
     lj_wasm_putu8(body, LJ_WASM_OP_I32_EQZ);
     lj_wasm_putu8(body, LJ_WASM_OP_IF);
     lj_wasm_putu8(body, LJ_WASM_BLOCKTYPE_EMPTY);
-    wasm_emit_guard_exit(ctx, ref);
+    if (!wasm_emit_guard_exit(ctx, ref))
+      return 0;
     lj_wasm_putu8(body, LJ_WASM_OP_END);
 
     lj_wasm_putu8(body, LJ_WASM_OP_LOCAL_GET);

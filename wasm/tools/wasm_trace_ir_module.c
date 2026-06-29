@@ -91,6 +91,7 @@ int main(void)
   setir(&T, REF_FIRST+21, IR_PHI, IRT_INT, REF_FIRST+0, REF_FIRST+1);
   setir(&T, REF_FIRST+22, IR_PHI, IRT_NUM, REF_FIRST+5, REF_FIRST+6);
 
+  lj_wasm_jit_assign_exitstate(&T);
   lj_buf_init(L, &sb);
   lowered = lj_wasm_jit_build_trace(L, &T, &sb);
   len = sbuflen(&sb);

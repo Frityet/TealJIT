@@ -99,6 +99,7 @@ int main(void)
   setguard(&T, REF_FIRST+18, IR_LE, IRT_INT, REF_FIRST+17, K100);
   setir(&T, REF_FIRST+19, IR_PHI, IRT_INT, REF_FIRST+10, REF_FIRST+17);
 
+  lj_wasm_jit_assign_exitstate(&T);
   lj_buf_init(L, &sb);
   lowered = lj_wasm_jit_build_trace(L, &T, &sb);
   len = sbuflen(&sb);

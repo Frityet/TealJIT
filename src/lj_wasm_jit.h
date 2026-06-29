@@ -22,6 +22,7 @@
 
 LJ_FUNC void lj_wasm_jit_build_nyi(lua_State *L, SBuf *module);
 #if LJ_HASJIT
+LJ_FUNC void lj_wasm_jit_assign_exitstate(GCtrace *T);
 LJ_FUNC int lj_wasm_jit_build_trace(lua_State *L, const GCtrace *T,
 				    SBuf *module);
 #endif

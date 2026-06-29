@@ -82,6 +82,8 @@ trace-numeric-for-module-check: wasm_trace_numeric_for_module
 	$(WASM_OBJDUMP) -d $(OUT_NUMERIC) | grep -q 'i32.trunc_f64_s'
 	$(WASM_OBJDUMP) -d $(OUT_NUMERIC) | grep -q 'f64.convert_i32_s'
 	$(WASM_OBJDUMP) -d $(OUT_NUMERIC) | grep -q 'i64.lt_u'
+	$(WASM_OBJDUMP) -d $(OUT_NUMERIC) | grep -q 'i64.store'
+	$(WASM_OBJDUMP) -d $(OUT_NUMERIC) | grep -q 'f64.store'
 	$(WASM_OBJDUMP) -d $(OUT_NUMERIC) | grep -q 'loop'
 	$(WASM_OBJDUMP) -d $(OUT_NUMERIC) | grep -q 'i32.const 100'
 

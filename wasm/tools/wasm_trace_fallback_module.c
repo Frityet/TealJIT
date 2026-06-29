@@ -50,6 +50,7 @@ int main(void)
   setir(&T, REF_FIRST+1, IR_SLOAD, IRT_NUM, 3, IRSLOAD_TYPECHECK);
   setir(&T, REF_FIRST+2, IR_DIV, IRT_NUM, REF_FIRST+0, REF_FIRST+1);
 
+  lj_wasm_jit_assign_exitstate(&T);
   lj_buf_init(L, &sb);
   lowered = lj_wasm_jit_build_trace(L, &T, &sb);
   len = sbuflen(&sb);
