@@ -154,6 +154,11 @@ typedef struct LJWasmtimeImportSpec {
   const char *summary;
 } LJWasmtimeImportSpec;
 
+typedef struct LJWasmtimeGuestMemory {
+  uint8_t *data;
+  uint64_t size;
+} LJWasmtimeGuestMemory;
+
 extern const LJWasmtimeImportSpec lj_wasmtime_host_imports[];
 extern const size_t lj_wasmtime_host_import_count;
 
@@ -161,6 +166,15 @@ void lj_wasmtime_host_set_hooks(const LJWasmtimeHostHooks *hooks);
 void lj_wasmtime_host_clear_hooks(void);
 const char *lj_wasmtime_host_status_name(int status);
 int lj_wasmtime_host_validate_jit_module(const LJWasmJITModule *module);
+int lj_wasmtime_guest_ptr(const LJWasmtimeGuestMemory *memory,
+                          uint64_t guest_ptr, size_t size, void **host_ptr);
+int lj_wasmtime_guest_read(const LJWasmtimeGuestMemory *memory,
+                           uint64_t guest_ptr, void *dst, size_t size);
+int lj_wasmtime_guest_write(const LJWasmtimeGuestMemory *memory,
+                            uint64_t guest_ptr, const void *src, size_t size);
+int lj_wasmtime_guest_read_cstr(const LJWasmtimeGuestMemory *memory,
+                                uint64_t guest_ptr, char *dst,
+                                size_t dst_size);
 
 int lj_wasm_import_ffi_load(const char *name, int global,
                             LJWasmHostHandle *handle);

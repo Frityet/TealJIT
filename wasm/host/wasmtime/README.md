@@ -44,6 +44,13 @@ A Wasmtime embedding must treat them as `i64` offsets for a WASM64 guest,
 validate them against the guest memory, and only then read or write guest data.
 Do not cast guest pointer values directly to native pointers.
 
+The C scaffold exposes `LJWasmtimeGuestMemory` plus
+`lj_wasmtime_guest_ptr`, `lj_wasmtime_guest_read`,
+`lj_wasmtime_guest_write`, and `lj_wasmtime_guest_read_cstr` for this boundary.
+These helpers do overflow-safe memory64 bounds checks against a host-provided
+memory view and are intended to be reused by real Wasmtime import wrappers after
+they borrow the guest memory from `Caller`.
+
 Host handles should be opaque guest-visible IDs or table indexes rather than raw
 native pointers. The guest stores them in pointer-sized slots, but the host owns
 the backing objects and lifetime.

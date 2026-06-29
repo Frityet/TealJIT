@@ -205,11 +205,44 @@ int main(void) {
   uint8_t fake_cc[128];
   LJWasmFFICall fake_call;
   LJWasmJITModule bad_module;
+  uint8_t guest_bytes[32];
+  LJWasmtimeGuestMemory guest_memory;
+  uint32_t guest_word;
+  char guest_name[8];
+  void *guest_host_ptr;
 
   assert(sizeof(LJWasmFFISig) == 8);
   assert(offsetof(LJWasmFFICall, sig) == 0);
   assert(offsetof(LJWasmFFICall, ret) >
          offsetof(LJWasmFFICall, reserved));
+
+  memset(guest_bytes, 0, sizeof(guest_bytes));
+  guest_memory.data = guest_bytes;
+  guest_memory.size = sizeof(guest_bytes);
+  guest_word = 0x12345678u;
+  assert(lj_wasmtime_guest_write(&guest_memory, 4, &guest_word,
+                                 sizeof(guest_word)) == LJ_WASM_HOST_OK);
+  guest_word = 0;
+  assert(lj_wasmtime_guest_read(&guest_memory, 4, &guest_word,
+                                sizeof(guest_word)) == LJ_WASM_HOST_OK);
+  assert(guest_word == 0x12345678u);
+  assert(lj_wasmtime_guest_ptr(&guest_memory, guest_memory.size, 0,
+                               &guest_host_ptr) == LJ_WASM_HOST_OK);
+  assert(lj_wasmtime_guest_ptr(&guest_memory, guest_memory.size, 1,
+                               &guest_host_ptr) == LJ_WASM_HOST_ERR);
+  assert(guest_host_ptr == NULL);
+  assert(lj_wasmtime_guest_ptr(&guest_memory, UINT64_MAX, 1,
+                               &guest_host_ptr) == LJ_WASM_HOST_ERR);
+  assert(guest_host_ptr == NULL);
+  memcpy(guest_bytes + 12, "libm", 5);
+  assert(lj_wasmtime_guest_read_cstr(&guest_memory, 12, guest_name,
+                                     sizeof(guest_name)) == LJ_WASM_HOST_OK);
+  assert(strcmp(guest_name, "libm") == 0);
+  assert(lj_wasmtime_guest_read_cstr(&guest_memory, 12, guest_name, 4) ==
+         LJ_WASM_HOST_ERR);
+  memset(guest_bytes + 20, 'x', sizeof(guest_bytes) - 20);
+  assert(lj_wasmtime_guest_read_cstr(&guest_memory, 20, guest_name,
+                                     sizeof(guest_name)) == LJ_WASM_HOST_ERR);
 
   memset(&module, 0, sizeof(module));
   module.bytes = module_bytes;

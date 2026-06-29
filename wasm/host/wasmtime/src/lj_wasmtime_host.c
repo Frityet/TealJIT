@@ -397,6 +397,74 @@ const char *lj_wasmtime_host_status_name(int status) {
   }
 }
 
+int lj_wasmtime_guest_ptr(const LJWasmtimeGuestMemory *memory,
+                          uint64_t guest_ptr, size_t size, void **host_ptr) {
+  if (host_ptr != NULL) {
+    *host_ptr = NULL;
+  }
+  if (memory == NULL || memory->data == NULL || host_ptr == NULL ||
+      size > memory->size || guest_ptr > memory->size - size) {
+    return LJ_WASM_HOST_ERR;
+  }
+  *host_ptr = (void *)(memory->data + guest_ptr);
+  return LJ_WASM_HOST_OK;
+}
+
+int lj_wasmtime_guest_read(const LJWasmtimeGuestMemory *memory,
+                           uint64_t guest_ptr, void *dst, size_t size) {
+  void *src;
+  if (dst == NULL && size != 0) {
+    return LJ_WASM_HOST_ERR;
+  }
+  if (lj_wasmtime_guest_ptr(memory, guest_ptr, size, &src) !=
+      LJ_WASM_HOST_OK) {
+    return LJ_WASM_HOST_ERR;
+  }
+  if (size != 0) {
+    memcpy(dst, src, size);
+  }
+  return LJ_WASM_HOST_OK;
+}
+
+int lj_wasmtime_guest_write(const LJWasmtimeGuestMemory *memory,
+                            uint64_t guest_ptr, const void *src,
+                            size_t size) {
+  void *dst;
+  if (src == NULL && size != 0) {
+    return LJ_WASM_HOST_ERR;
+  }
+  if (lj_wasmtime_guest_ptr(memory, guest_ptr, size, &dst) !=
+      LJ_WASM_HOST_OK) {
+    return LJ_WASM_HOST_ERR;
+  }
+  if (size != 0) {
+    memcpy(dst, src, size);
+  }
+  return LJ_WASM_HOST_OK;
+}
+
+int lj_wasmtime_guest_read_cstr(const LJWasmtimeGuestMemory *memory,
+                                uint64_t guest_ptr, char *dst,
+                                size_t dst_size) {
+  uint64_t i;
+  if (dst == NULL || dst_size == 0 || memory == NULL || memory->data == NULL ||
+      guest_ptr >= memory->size) {
+    return LJ_WASM_HOST_ERR;
+  }
+  for (i = guest_ptr; i < memory->size; i++) {
+    uint64_t len = i - guest_ptr;
+    if (len + 1 >= dst_size) {
+      return LJ_WASM_HOST_ERR;
+    }
+    dst[len] = (char)memory->data[i];
+    if (memory->data[i] == 0) {
+      return LJ_WASM_HOST_OK;
+    }
+  }
+  dst[0] = 0;
+  return LJ_WASM_HOST_ERR;
+}
+
 int lj_wasmtime_host_validate_jit_module(const LJWasmJITModule *module) {
   const uint32_t known_flags =
       LJ_WASM_JIT_F_IR_LOWERED | LJ_WASM_JIT_F_IMPORT_ENV_MEMORY;

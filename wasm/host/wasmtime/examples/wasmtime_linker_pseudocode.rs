@@ -35,9 +35,11 @@ fn register_luajit_host_imports(linker: &mut Linker<HostState>) -> anyhow::Resul
          -> i32 {
             let _ = (caller, name_ptr, global, handle_out_ptr);
             // TODO:
-            // 1. Read a NUL-terminated library name from guest memory.
+            // 1. Borrow guest memory and use lj_wasmtime_guest_read_cstr-style
+            //    bounds checks for the NUL-terminated library name.
             // 2. Resolve either a named library or the global namespace.
-            // 3. Store an opaque handle-table ID into `handle_out_ptr`.
+            // 3. Store an opaque handle-table ID into `handle_out_ptr` with a
+            //    checked lj_wasmtime_guest_write-style helper.
             NYI
         },
     )?;
@@ -60,7 +62,8 @@ fn register_luajit_host_imports(linker: &mut Linker<HostState>) -> anyhow::Resul
          symbol_out_ptr: i64|
          -> i32 {
             let _ = (caller, handle, name_ptr, symbol_out_ptr);
-            // TODO: resolve a symbol and write an opaque symbol handle.
+            // TODO: read the symbol name through the checked guest-memory
+            // helper, resolve it, and write an opaque symbol handle ID.
             NYI
         },
     )?;
@@ -70,10 +73,11 @@ fn register_luajit_host_imports(linker: &mut Linker<HostState>) -> anyhow::Resul
         "lj_wasm_import_ffi_call",
         |mut caller: Caller<'_, HostState>, cts: i64, ct: i64, cc: i64, call: i64| -> i32 {
             let _ = (caller, cts, ct, cc, call);
-            // TODO: read LJWasmFFICall from `call`, validate its ABI version
-            // and `ccall_size`, reject descriptors marked unsupported, resolve
-            // the callee via `func_offset`, then use slot offsets into `cc` to
-            // marshal scalar arguments/results across the host boundary.
+            // TODO: read LJWasmFFICall from `call` through checked guest memory,
+            // validate its ABI version and `ccall_size`, reject descriptors
+            // marked unsupported, resolve the callee via `func_offset`, then use
+            // slot offsets into `cc` to marshal scalar arguments/results across
+            // the host boundary.
             NYI
         },
     )?;
