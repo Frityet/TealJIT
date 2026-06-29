@@ -1856,10 +1856,17 @@ static int teal_type_desc_assignable(TealTypeDesc want, TealTypeDesc got)
 
 static int teal_is_definitely_true(ExpDesc *e, TealTypeDesc want)
 {
+  TealTypeDesc have;
   if (want.type == TEAL_T_ANY)
     return 1;
   if (e->teal_type == TEAL_T_UNKNOWN || e->teal_type == TEAL_T_ANY)
     return 0;
+  if (e->teal_type == TEAL_T_UNION)
+    return 0;
+  if (want.type == TEAL_T_UNION) {
+    have = teal_type_from_expr(e->teal_tabfs, e);
+    return !e->teal_nil && teal_type_desc_assignable(want, have);
+  }
   if (want.type == TEAL_T_NIL)
     return e->teal_type == TEAL_T_NIL;
   return !e->teal_nil && teal_type_matches(e->teal_type, want.type);
@@ -1867,11 +1874,18 @@ static int teal_is_definitely_true(ExpDesc *e, TealTypeDesc want)
 
 static int teal_is_definitely_false(ExpDesc *e, TealTypeDesc want)
 {
+  TealTypeDesc have;
   if (want.type == TEAL_T_ANY ||
       e->teal_type == TEAL_T_UNKNOWN || e->teal_type == TEAL_T_ANY)
     return 0;
   if (want.type == TEAL_T_NIL)
     return e->teal_type != TEAL_T_NIL && !e->teal_nil;
+  if (e->teal_type == TEAL_T_UNION)
+    return 0;
+  if (want.type == TEAL_T_UNION) {
+    have = teal_type_from_expr(e->teal_tabfs, e);
+    return !e->teal_nil && !teal_type_desc_assignable(want, have);
+  }
   if (e->teal_type == TEAL_T_NUMBER && want.type == TEAL_T_INTEGER)
     return 0;
   if (teal_type_matches(e->teal_type, want.type))
@@ -1957,6 +1971,33 @@ static void teal_emit_integer_value_test(LexState *ls, ExpDesc *v)
   bcemit_comp(fs, OPR_EQ, v, &zero);
 }
 
+static void teal_emit_is(LexState *ls, ExpDesc *v, TealTypeDesc want);
+
+static void teal_emit_union_is(LexState *ls, ExpDesc *v, TealTypeDesc want)
+{
+  FuncState *fs = ls->fs;
+  FuncState *unionfs = want.tabfs ? want.tabfs : fs;
+  TealUnionType *tu = teal_union_type(unionfs, want.tab);
+  ExpDesc src = *v;
+  uint16_t i;
+  if (tu == NULL || tu->count == 0)
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		 "unsupported runtime 'is' type, ", teal_type_name(want.type));
+  for (i = 0; i < tu->count; i++) {
+    ExpDesc arm = src;
+    TealTypeDesc part = unionfs->teal_union_parts[tu->first+i];
+    if (i != 0)
+      bcemit_binop_left(fs, OPR_OR, v);
+    teal_emit_is(ls, &arm, part);
+    if (i == 0)
+      *v = arm;
+    else
+      bcemit_binop(fs, OPR_OR, v, &arm);
+  }
+  v->teal_type = TEAL_T_BOOLEAN;
+  v->teal_nil = 0;
+}
+
 static void teal_emit_is(LexState *ls, ExpDesc *v, TealTypeDesc want)
 {
   const char *tname;
@@ -1973,6 +2014,9 @@ static void teal_emit_is(LexState *ls, ExpDesc *v, TealTypeDesc want)
   }
   if (want.type == TEAL_T_NIL) {
     teal_emit_nil_test(ls->fs, v, 1);
+  } else if (want.type == TEAL_T_UNION) {
+    teal_emit_union_is(ls, v, want);
+    return;
   } else if (v->teal_nil && teal_type_matches(v->teal_type, want.type)) {
     teal_emit_nil_test(ls->fs, v, 0);
   } else if (want.type == TEAL_T_INTEGER) {

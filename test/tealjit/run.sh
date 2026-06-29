@@ -16,6 +16,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" strict_off_nil.tl
 "$LUAJIT" -t strict=off strict_cli_off.tl
 "$LUAJIT" is_primitive.tl
+"$LUAJIT" is_union.tl
 "$LUAJIT" record_fields.tl
 "$LUAJIT" function_calls.tl
 "$LUAJIT" function_type_annotations.tl
