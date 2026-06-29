@@ -23,6 +23,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" type_aliases.tl
 "$LUAJIT" global_declarations.tl
 "$LUAJIT" table_types.tl
+"$LUAJIT" for_iterators.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   echo "as_bad.tl unexpectedly passed" >&2
@@ -239,6 +240,42 @@ if "$LUAJIT" table_nested_value_bad.tl >/tmp/tealjit-table-nested-value.out 2>&1
   exit 1
 fi
 grep -q "type mismatch" /tmp/tealjit-table-nested-value.out
+
+if "$LUAJIT" for_ipairs_value_bad.tl >/tmp/tealjit-for-ipairs-value.out 2>&1; then
+  echo "for_ipairs_value_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-for-ipairs-value.out
+
+if "$LUAJIT" for_pairs_key_bad.tl >/tmp/tealjit-for-pairs-key.out 2>&1; then
+  echo "for_pairs_key_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-for-pairs-key.out
+
+if "$LUAJIT" for_pairs_value_bad.tl >/tmp/tealjit-for-pairs-value.out 2>&1; then
+  echo "for_pairs_value_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-for-pairs-value.out
+
+if "$LUAJIT" for_iterator_too_many_bad.tl >/tmp/tealjit-for-too-many.out 2>&1; then
+  echo "for_iterator_too_many_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "too many variables for this iterator" /tmp/tealjit-for-too-many.out
+
+if "$LUAJIT" for_inline_annotation_bad.tl >/tmp/tealjit-for-inline-annotation.out 2>&1; then
+  echo "for_inline_annotation_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "expected" /tmp/tealjit-for-inline-annotation.out
+
+if "$LUAJIT" for_ipairs_map_bad.tl >/tmp/tealjit-for-ipairs-map.out 2>&1; then
+  echo "for_ipairs_map_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "attempting ipairs" /tmp/tealjit-for-ipairs-map.out
 
 if "$LUAJIT" record_method_colon_arg_bad.tl >/tmp/tealjit-method-arg.out 2>&1; then
   echo "record_method_colon_arg_bad.tl unexpectedly passed" >&2

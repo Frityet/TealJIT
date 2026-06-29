@@ -84,6 +84,19 @@ typedef struct ExpDesc {
   uint8_t teal_index_keynil;  /* Static key type includes nil. */
   uint16_t teal_index_keytab;  /* Static table key type for table indexing. */
   FuncState *teal_index_keytabfs;  /* Owner of teal_index_keytab. */
+  uint8_t teal_iter;	/* Builtin iterator result metadata kind. */
+  uint8_t teal_iter_ktype;
+  uint8_t teal_iter_knil;
+  uint16_t teal_iter_ksig;
+  FuncState *teal_iter_ksigfs;
+  uint16_t teal_iter_ktab;
+  FuncState *teal_iter_ktabfs;
+  uint8_t teal_iter_vtype;
+  uint8_t teal_iter_vnil;
+  uint16_t teal_iter_vsig;
+  FuncState *teal_iter_vsigfs;
+  uint16_t teal_iter_vtab;
+  FuncState *teal_iter_vtabfs;
 } ExpDesc;
 
 typedef enum TealType {
@@ -116,6 +129,10 @@ typedef struct TealTypeDesc {
 #define TEAL_MAX_GLOBALS	512
 #define TEAL_MAX_TABLE_TYPES	512
 #define TEAL_MAX_TABLE_ENTRIES	1024
+
+#define TEAL_ITER_NONE		0
+#define TEAL_ITER_IPAIRS	1
+#define TEAL_ITER_PAIRS		2
 
 typedef struct TealFuncSig {
   uint16_t first;
@@ -185,6 +202,19 @@ static LJ_AINLINE void expr_init(ExpDesc *e, ExpKind k, uint32_t info)
   e->teal_index_keynil = 0;
   e->teal_index_keytab = 0;
   e->teal_index_keytabfs = NULL;
+  e->teal_iter = TEAL_ITER_NONE;
+  e->teal_iter_ktype = TEAL_T_UNKNOWN;
+  e->teal_iter_knil = 0;
+  e->teal_iter_ksig = 0;
+  e->teal_iter_ksigfs = NULL;
+  e->teal_iter_ktab = 0;
+  e->teal_iter_ktabfs = NULL;
+  e->teal_iter_vtype = TEAL_T_UNKNOWN;
+  e->teal_iter_vnil = 0;
+  e->teal_iter_vsig = 0;
+  e->teal_iter_vsigfs = NULL;
+  e->teal_iter_vtab = 0;
+  e->teal_iter_vtabfs = NULL;
 }
 
 /* Check number constant for +-0. */
@@ -1398,6 +1428,104 @@ static void teal_expr_set_type(ExpDesc *e, TealTypeDesc t)
   e->teal_sigfs = t.sigfs;
   e->teal_tab = t.tab;
   e->teal_tabfs = t.tabfs;
+}
+
+static void teal_iter_set(ExpDesc *e, uint8_t kind, TealTypeDesc key,
+			  TealTypeDesc val)
+{
+  e->teal_iter = kind;
+  e->teal_iter_ktype = key.type;
+  e->teal_iter_knil = key.nilok;
+  e->teal_iter_ksig = key.sig;
+  e->teal_iter_ksigfs = key.sigfs;
+  e->teal_iter_ktab = key.tab;
+  e->teal_iter_ktabfs = key.tabfs;
+  e->teal_iter_vtype = val.type;
+  e->teal_iter_vnil = val.nilok;
+  e->teal_iter_vsig = val.sig;
+  e->teal_iter_vsigfs = val.sigfs;
+  e->teal_iter_vtab = val.tab;
+  e->teal_iter_vtabfs = val.tabfs;
+}
+
+static TealTypeDesc teal_iter_key_type(ExpDesc *e)
+{
+  TealTypeDesc t;
+  teal_type_unknown(&t);
+  t.type = e->teal_iter_ktype;
+  t.nilok = e->teal_iter_knil;
+  t.sig = e->teal_iter_ksig;
+  t.sigfs = e->teal_iter_ksigfs;
+  t.tab = e->teal_iter_ktab;
+  t.tabfs = e->teal_iter_ktabfs;
+  return t;
+}
+
+static TealTypeDesc teal_iter_val_type(ExpDesc *e)
+{
+  TealTypeDesc t;
+  teal_type_unknown(&t);
+  t.type = e->teal_iter_vtype;
+  t.nilok = e->teal_iter_vnil;
+  t.sig = e->teal_iter_vsig;
+  t.sigfs = e->teal_iter_vsigfs;
+  t.tab = e->teal_iter_vtab;
+  t.tabfs = e->teal_iter_vtabfs;
+  return t;
+}
+
+static uint8_t teal_builtin_iter_kind(GCstr *name)
+{
+  if (name->len == 6 && memcmp(strdata(name), "ipairs", 6) == 0)
+    return TEAL_ITER_IPAIRS;
+  if (name->len == 5 && memcmp(strdata(name), "pairs", 5) == 0)
+    return TEAL_ITER_PAIRS;
+  return TEAL_ITER_NONE;
+}
+
+static void teal_apply_builtin_iter(LexState *ls, ExpDesc *e, uint8_t kind,
+				    ExpDesc *arg)
+{
+  FuncState *fs = ls->fs;
+  FuncState *tabfs = arg->teal_tabfs ? arg->teal_tabfs : fs;
+  TealTableType *tt;
+  TealTypeDesc key, val, intkey;
+  if (!ls->teal || kind == TEAL_ITER_NONE)
+    return;
+  if (arg->teal_type != TEAL_T_TABLE || arg->teal_tab == 0) {
+    if (ls->teal_strict && arg->teal_type != TEAL_T_UNKNOWN)
+      lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		   kind == TEAL_ITER_IPAIRS ? "attempting ipairs, " :
+					      "attempting pairs, ",
+		   teal_type_name(arg->teal_type));
+    return;
+  }
+  tt = teal_table_type(tabfs, arg->teal_tab);
+  if (tt == NULL)
+    return;
+  key = tt->key;
+  val = tt->val;
+  if (kind == TEAL_ITER_IPAIRS) {
+    teal_type_unknown(&intkey);
+    intkey.type = TEAL_T_INTEGER;
+    if (ls->teal_strict && key.type != TEAL_T_UNKNOWN &&
+	!teal_type_desc_assignable(key, intkey) &&
+	!teal_type_desc_assignable(intkey, key))
+      lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		   "attempting ipairs, ", teal_type_name(key.type));
+    key = intkey;
+  }
+  teal_iter_set(e, kind, key, val);
+}
+
+static void teal_set_local_type(FuncState *fs, BCReg reg, TealTypeDesc t)
+{
+  fs->teal_vtype[reg] = t.type;
+  fs->teal_vnil[reg] = t.nilok;
+  fs->teal_vsig[reg] = t.sig;
+  fs->teal_vsigfs[reg] = t.sigfs;
+  fs->teal_vtab[reg] = t.tab;
+  fs->teal_vtabfs[reg] = t.tabfs;
 }
 
 static uint16_t teal_table_type_new(LexState *ls, FuncState *fs,
@@ -3485,17 +3613,21 @@ static BCReg expr_list_call(LexState *ls, ExpDesc *v, FuncState *sigfs,
 }
 
 /* Parse function argument list. */
-static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args)
+static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args,
+		       uint8_t builtin_iter)
 {
   FuncState *fs = ls->fs;
   ExpDesc args;
+  ExpDesc iterarg;
   BCIns ins;
   BCReg base;
   uint16_t sig = e->teal_sig;
   FuncState *sigfs = e->teal_sigfs;
   BCReg nargs = 0;
   int openargs = 0;
+  int have_iterarg = 0;
   BCLine line = ls->linenumber;
+  expr_init(&iterarg, VVOID, 0);
   if (sig != 0 && sigfs == NULL) sigfs = fs;
   if (ls->tok == '(') {
 #if !LJ_52
@@ -3507,6 +3639,10 @@ static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args)
       args.k = VVOID;
     } else {
       nargs = expr_list_call(ls, &args, sigfs, sig, implicit_args);
+      if (builtin_iter != TEAL_ITER_NONE && nargs == 1) {
+	iterarg = args;
+	have_iterarg = 1;
+      }
       if (args.k == VCALL)  /* f(a, b, g()) or f(a, b, ...). */
 	setbc_b(bcptr(fs, &args), 0), openargs = 1;  /* Pass on multiple results. */
     }
@@ -3514,6 +3650,10 @@ static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args)
   } else if (ls->tok == '{') {
     expr_table(ls, &args);
     nargs = 1;
+    if (builtin_iter != TEAL_ITER_NONE) {
+      iterarg = args;
+      have_iterarg = 1;
+    }
     teal_check_call_arg(ls, sigfs, sig, (BCReg)(implicit_args+1), &args);
   } else if (ls->tok == TK_string) {
     expr_init(&args, VKSTR, 0);
@@ -3539,6 +3679,8 @@ static void parse_args(LexState *ls, ExpDesc *e, BCReg implicit_args)
   }
   expr_init(e, VCALL, bcemit_INS(fs, ins));
   e->u.s.aux = base;
+  if (have_iterarg)
+    teal_apply_builtin_iter(ls, e, builtin_iter, &iterarg);
   if (sig != 0) {
     TealFuncSig *ts = teal_func_sig(sigfs, sig);
     if (ts != NULL) {
@@ -3581,11 +3723,13 @@ static void expr_primary(LexState *ls, ExpDesc *v)
       lj_lex_next(ls);
       expr_str(ls, &key);
       bcemit_method(fs, v, &key);
-      parse_args(ls, v, 1);
+      parse_args(ls, v, 1, TEAL_ITER_NONE);
     } else if (ls->tok == '(' || ls->tok == TK_string || ls->tok == '{') {
+      uint8_t builtin_iter = v->k == VGLOBAL ?
+			     teal_builtin_iter_kind(v->u.sval) : TEAL_ITER_NONE;
       expr_tonextreg(fs, v);
       if (ls->fr2) bcreg_reserve(fs, 1);
-      parse_args(ls, v, 0);
+      parse_args(ls, v, 0, builtin_iter);
     } else {
       break;
     }
@@ -4462,11 +4606,15 @@ static void parse_for_iter(LexState *ls, GCstr *indexname)
   FuncState *fs = ls->fs;
   ExpDesc e;
   BCReg nvars = 0;
+  BCReg varbase = fs->nactvar;
+  BCReg nexps, nvis;
   BCLine line;
   BCReg base = fs->freereg + 3;
   BCPos loop, loopend, exprpc = fs->pc;
   FuncScope bl;
   int isnext;
+  uint8_t iterkind;
+  TealTypeDesc iterkey, iterval;
   /* Hidden control variables. */
   var_new_fixed(ls, nvars++, VARNAME_FOR_GEN);
   var_new_fixed(ls, nvars++, VARNAME_FOR_STATE);
@@ -4477,7 +4625,15 @@ static void parse_for_iter(LexState *ls, GCstr *indexname)
     var_new(ls, nvars++, lex_str(ls));
   lex_check(ls, TK_in);
   line = ls->linenumber;
-  assign_adjust(ls, 3, expr_list(ls, &e), &e);
+  nexps = expr_list(ls, &e);
+  iterkind = e.teal_iter;
+  iterkey = teal_iter_key_type(&e);
+  iterval = teal_iter_val_type(&e);
+  nvis = (BCReg)(nvars - 3);
+  if (ls->teal && iterkind != TEAL_ITER_NONE && nvis > 2)
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		 "too many variables for this iterator, ", "");
+  assign_adjust(ls, 3, nexps, &e);
   /* The iterator needs another 3 [4] slots (func [pc] | state ctl). */
   bcreg_bump(fs, 3+ls->fr2);
   isnext = (nvars <= 5 && fs->pc > exprpc && predict_next(ls, fs, exprpc));
@@ -4486,6 +4642,12 @@ static void parse_for_iter(LexState *ls, GCstr *indexname)
   loop = bcemit_AJ(fs, isnext ? BC_ISNEXT : BC_JMP, base, NO_JMP);
   fscope_begin(fs, &bl, 0);  /* Scope for visible variables. */
   var_add(ls, nvars-3);
+  if (ls->teal && iterkind != TEAL_ITER_NONE) {
+    if (nvis >= 1)
+      teal_set_local_type(fs, (BCReg)(varbase + 3), iterkey);
+    if (nvis >= 2)
+      teal_set_local_type(fs, (BCReg)(varbase + 4), iterval);
+  }
   bcreg_reserve(fs, nvars-3);
   parse_block(ls);
   fscope_end(fs);
