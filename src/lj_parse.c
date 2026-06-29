@@ -70,9 +70,11 @@ typedef struct ExpDesc {
   uint8_t teal_type;	/* Static Teal type, if known. */
   uint8_t teal_nil;	/* Static Teal type includes nil. */
   uint16_t teal_shape;	/* Static Teal record shape for this value. */
+  FuncState *teal_shapefs;	/* Function state owning teal_shape. */
   uint16_t teal_sig;	/* Static Teal function signature for this value. */
   FuncState *teal_sigfs;	/* Function state owning teal_sig. */
   uint16_t teal_field_shape;  /* Record shape for indexed field LHS/read. */
+  FuncState *teal_field_shapefs;  /* Function state owning teal_field_shape. */
   GCstr *teal_field;	/* Dot-field name for record shape checks. */
 } ExpDesc;
 
@@ -100,6 +102,7 @@ typedef struct TealTypeDesc {
 #define TEAL_MAX_RECORD_FIELDS	512
 #define TEAL_MAX_FUNC_PARAMS	512
 #define TEAL_MAX_TYPE_ALIASES	512
+#define TEAL_MAX_GLOBALS	512
 
 typedef struct TealFuncSig {
   uint16_t first;
@@ -137,9 +140,11 @@ static LJ_AINLINE void expr_init(ExpDesc *e, ExpKind k, uint32_t info)
   e->teal_type = TEAL_T_UNKNOWN;
   e->teal_nil = 0;
   e->teal_shape = 0;
+  e->teal_shapefs = NULL;
   e->teal_sig = 0;
   e->teal_sigfs = NULL;
   e->teal_field_shape = 0;
+  e->teal_field_shapefs = NULL;
   e->teal_field = NULL;
 }
 
@@ -205,6 +210,7 @@ struct FuncState {
   uint16_t teal_vsig[LJ_MAX_LOCVAR];	/* Static Teal local function sig. */
   FuncState *teal_vsigfs[LJ_MAX_LOCVAR]; /* Owners of local function sigs. */
   uint16_t teal_vshape[LJ_MAX_LOCVAR];	/* Static Teal local record shape. */
+  FuncState *teal_vshapefs[LJ_MAX_LOCVAR]; /* Owners of local record shapes. */
   TealRecordShape teal_shapes[LJ_MAX_LOCVAR];	/* Parser-only shapes. */
   GCstr *teal_shape_field[TEAL_MAX_RECORD_FIELDS];
   uint16_t teal_shape_owner[TEAL_MAX_RECORD_FIELDS];
@@ -217,9 +223,14 @@ struct FuncState {
   uint8_t teal_sig_pnil[TEAL_MAX_FUNC_PARAMS];
   GCstr *teal_alias_name[TEAL_MAX_TYPE_ALIASES];
   TealTypeDesc teal_alias_type[TEAL_MAX_TYPE_ALIASES];
+  GCstr *teal_global_name[TEAL_MAX_GLOBALS];
+  TealTypeDesc teal_global_type[TEAL_MAX_GLOBALS];
+  uint16_t teal_global_shape[TEAL_MAX_GLOBALS];
+  FuncState *teal_global_shapefs[TEAL_MAX_GLOBALS];
   uint16_t teal_nsig;
   uint16_t teal_nsigparam;
   uint16_t teal_nalias;
+  uint16_t teal_nglobal;
   uint8_t teal_paramtype[LJ_MAX_LOCVAR];
   uint8_t teal_paramnil[LJ_MAX_LOCVAR];
   uint8_t teal_paramoptional[LJ_MAX_LOCVAR];
@@ -527,6 +538,8 @@ static void teal_check_record_field_read(FuncState *fs, ExpDesc *e);
 static void teal_check_record_field_store(FuncState *fs, ExpDesc *var,
 					  ExpDesc *e);
 static int teal_record_field_find(FuncState *fs, uint16_t sid, GCstr *field);
+static void teal_check_global_store(FuncState *fs, ExpDesc *var, ExpDesc *e);
+static void teal_apply_global(FuncState *fs, ExpDesc *e);
 
 /* -- Bytecode emitter for expressions ------------------------------------ */
 
@@ -738,6 +751,7 @@ static void bcemit_store(FuncState *fs, ExpDesc *var, ExpDesc *e)
     else
       ins = BCINS_AD(BC_USETV, var->u.s.info, expr_toanyreg(fs, e));
   } else if (var->k == VGLOBAL) {
+    teal_check_global_store(fs, var, e);
     BCReg ra = expr_toanyreg(fs, e);
     ins = BCINS_AD(BC_GSET, ra, const_str(fs, var));
   } else {
@@ -768,18 +782,19 @@ static void bcemit_store(FuncState *fs, ExpDesc *var, ExpDesc *e)
 static void bcemit_method(FuncState *fs, ExpDesc *e, ExpDesc *key)
 {
   uint16_t shape = e->teal_shape;
+  FuncState *shapefs = e->teal_shapefs ? e->teal_shapefs : fs;
   uint16_t sig = 0;
   FuncState *sigfs = NULL;
   uint8_t ttype = TEAL_T_UNKNOWN;
   uint8_t tnil = 0;
   BCReg idx, func, fr2, obj;
   if (shape != 0 && expr_isstrk(key)) {
-    int fidx = teal_record_field_find(fs, shape, key->u.sval);
+    int fidx = teal_record_field_find(shapefs, shape, key->u.sval);
     if (fidx >= 0) {
-      ttype = fs->teal_shape_ftype[fidx];
-      tnil = fs->teal_shape_fnil[fidx];
-      sig = fs->teal_shape_fsig[fidx];
-      sigfs = fs->teal_shape_fsigfs[fidx];
+      ttype = shapefs->teal_shape_ftype[fidx];
+      tnil = shapefs->teal_shape_fnil[fidx];
+      sig = shapefs->teal_shape_fsig[fidx];
+      sigfs = shapefs->teal_shape_fsigfs[fidx];
     } else if (fs->ls->teal && fs->ls->teal_strict) {
       lj_lex_error(fs->ls, 0, LJ_ERR_XTEAL,
 		   "unknown record field, ", strdata(key->u.sval));
@@ -1475,7 +1490,8 @@ static void teal_emit_freeze_record(LexState *ls, ExpDesc *e)
   if (!ls->teal || !ls->teal_strict || e->teal_type != TEAL_T_RECORD ||
       e->teal_nil)
     return;
-  shape = teal_record_shape(fs, e->teal_shape);
+  shape = teal_record_shape(e->teal_shapefs ? e->teal_shapefs : fs,
+			    e->teal_shape);
   if (shape != NULL)
     shape->open = 0;
   obj = expr_toanyreg(fs, e);
@@ -1589,6 +1605,89 @@ static void teal_check_call_arity(LexState *ls, FuncState *sigfs,
 		 "function arity mismatch, ", "");
 }
 
+static int teal_global_find(FuncState *fs, GCstr *name)
+{
+  uint16_t i;
+  for (i = 0; i < fs->teal_nglobal; i++)
+    if (fs->teal_global_name[i] == name)
+      return i;
+  return -1;
+}
+
+static int teal_global_lookup(FuncState *fs, GCstr *name, TealTypeDesc *t,
+			      uint16_t *shape, FuncState **shapefs)
+{
+  while (fs != NULL) {
+    int idx = teal_global_find(fs, name);
+    if (idx >= 0) {
+      if (t != NULL) *t = fs->teal_global_type[idx];
+      if (shape != NULL) *shape = fs->teal_global_shape[idx];
+      if (shapefs != NULL) *shapefs = fs->teal_global_shapefs[idx];
+      return 1;
+    }
+    fs = fs->prev;
+  }
+  return 0;
+}
+
+static void teal_global_define(LexState *ls, GCstr *name, TealTypeDesc t,
+			       uint16_t shape, FuncState *shapefs)
+{
+  FuncState *fs = ls->fs;
+  int idx;
+  if (!ls->teal) return;
+  name = lj_parse_keepstr(ls, strdata(name), name->len);
+  idx = teal_global_find(fs, name);
+  if (idx < 0) {
+    if (fs->teal_nglobal >= TEAL_MAX_GLOBALS)
+      lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many globals, ", "");
+    idx = fs->teal_nglobal++;
+    fs->teal_global_name[idx] = name;
+  }
+  fs->teal_global_type[idx] = t;
+  fs->teal_global_shape[idx] = shape;
+  fs->teal_global_shapefs[idx] = shapefs;
+}
+
+static void teal_apply_global(FuncState *fs, ExpDesc *e)
+{
+  TealTypeDesc t;
+  uint16_t shape = 0;
+  FuncState *shapefs = NULL;
+  if (!fs->ls->teal || e->k != VGLOBAL ||
+      !teal_global_lookup(fs, e->u.sval, &t, &shape, &shapefs))
+    return;
+  e->teal_type = t.type;
+  e->teal_nil = t.nilok;
+  e->teal_sig = t.sig;
+  e->teal_sigfs = t.sigfs;
+  e->teal_shape = shape;
+  e->teal_shapefs = shapefs;
+}
+
+static void teal_check_global_store(FuncState *fs, ExpDesc *var, ExpDesc *e)
+{
+  LexState *ls = fs->ls;
+  TealTypeDesc want, have;
+  uint16_t shape = 0;
+  FuncState *shapefs = NULL;
+  if (!ls->teal || var->k != VGLOBAL)
+    return;
+  if (teal_global_lookup(fs, var->u.sval, &want, &shape, &shapefs)) {
+    teal_check_assign(ls, want, e, "global type mismatch, ");
+    return;
+  }
+  if (e->teal_type == TEAL_T_FUNCTION || e->teal_type == TEAL_T_RECORD) {
+    teal_type_unknown(&have);
+    have.type = e->teal_type;
+    have.nilok = e->teal_nil;
+    have.sig = e->teal_sig;
+    have.sigfs = e->teal_sigfs ? e->teal_sigfs : fs;
+    teal_global_define(ls, var->u.sval, have, e->teal_shape,
+		       e->teal_shapefs ? e->teal_shapefs : fs);
+  }
+}
+
 static uint16_t teal_record_shape_new(LexState *ls, BCReg reg)
 {
   FuncState *fs = ls->fs;
@@ -1602,6 +1701,7 @@ static uint16_t teal_record_shape_new(LexState *ls, BCReg reg)
   shape->open = 1;
   fs->teal_nshape++;
   fs->teal_vshape[reg] = fs->teal_nshape;
+  fs->teal_vshapefs[reg] = fs;
   return fs->teal_nshape;
 }
 
@@ -1624,11 +1724,11 @@ static int teal_record_field_find(FuncState *fs, uint16_t sid, GCstr *field)
   return -1;
 }
 
-static int teal_record_field_add(LexState *ls, uint16_t sid, GCstr *field,
-				 TealTypeDesc t, uint16_t fsig,
-				 FuncState *fsigfs)
+static int teal_record_field_add_to(LexState *ls, FuncState *fs,
+				    uint16_t sid, GCstr *field,
+				    TealTypeDesc t, uint16_t fsig,
+				    FuncState *fsigfs)
 {
-  FuncState *fs = ls->fs;
   TealRecordShape *shape = teal_record_shape(fs, sid);
   uint16_t idx;
   int old;
@@ -1646,6 +1746,13 @@ static int teal_record_field_add(LexState *ls, uint16_t sid, GCstr *field,
   fs->teal_shape_fsigfs[idx] = fsigfs;
   shape->count++;
   return idx;
+}
+
+static int teal_record_field_add(LexState *ls, uint16_t sid, GCstr *field,
+				 TealTypeDesc t, uint16_t fsig,
+				 FuncState *fsigfs)
+{
+  return teal_record_field_add_to(ls, ls->fs, sid, field, t, fsig, fsigfs);
 }
 
 static uint16_t teal_record_shape_clone(LexState *ls, FuncState *srcfs,
@@ -1667,6 +1774,7 @@ static uint16_t teal_record_shape_clone(LexState *ls, FuncState *srcfs,
   dstfs->teal_nshape++;
   newid = dstfs->teal_nshape;
   dstfs->teal_vshape[reg] = newid;
+  dstfs->teal_vshapefs[reg] = dstfs;
   for (i = 0; i < srcfs->teal_nfield; i++) {
     if (srcfs->teal_shape_owner[i] == sid) {
       TealTypeDesc t;
@@ -1685,57 +1793,61 @@ static uint16_t teal_record_shape_clone(LexState *ls, FuncState *srcfs,
 
 static void teal_check_record_field_read(FuncState *fs, ExpDesc *e)
 {
+  FuncState *shapefs = e->teal_field_shapefs ?
+		       e->teal_field_shapefs : fs;
   int idx;
   if (!fs->ls->teal || e->teal_field_shape == 0 || e->teal_field == NULL)
     return;
-  idx = teal_record_field_find(fs, e->teal_field_shape, e->teal_field);
+  idx = teal_record_field_find(shapefs, e->teal_field_shape, e->teal_field);
   if (idx < 0) {
     if (fs->ls->teal_strict)
       lj_lex_error(fs->ls, 0, LJ_ERR_XTEAL,
 		   "unknown record field, ", strdata(e->teal_field));
     return;
   }
-  e->teal_type = fs->teal_shape_ftype[idx];
-  e->teal_nil = fs->teal_shape_fnil[idx];
-  e->teal_sig = fs->teal_shape_fsig[idx];
-  e->teal_sigfs = fs->teal_shape_fsigfs[idx];
+  e->teal_type = shapefs->teal_shape_ftype[idx];
+  e->teal_nil = shapefs->teal_shape_fnil[idx];
+  e->teal_sig = shapefs->teal_shape_fsig[idx];
+  e->teal_sigfs = shapefs->teal_shape_fsigfs[idx];
 }
 
 static void teal_check_record_field_store(FuncState *fs, ExpDesc *var,
 					  ExpDesc *e)
 {
   LexState *ls = fs->ls;
+  FuncState *shapefs = var->teal_field_shapefs ?
+		       var->teal_field_shapefs : fs;
   TealRecordShape *shape;
   TealTypeDesc have;
   int idx;
   if (!ls->teal || var->teal_field_shape == 0 || var->teal_field == NULL)
     return;
   teal_type_unknown(&have);
-  shape = teal_record_shape(fs, var->teal_field_shape);
+  shape = teal_record_shape(shapefs, var->teal_field_shape);
   if (shape == NULL) return;
-  idx = teal_record_field_find(fs, var->teal_field_shape, var->teal_field);
+  idx = teal_record_field_find(shapefs, var->teal_field_shape, var->teal_field);
   if (idx < 0) {
     if (!ls->teal_strict || shape->open) {
       have.type = e->teal_type;
       have.nilok = e->teal_nil;
-      (void)teal_record_field_add(ls, var->teal_field_shape,
-				  var->teal_field, have, e->teal_sig,
-				  e->teal_sig != 0 ?
-				  (e->teal_sigfs ? e->teal_sigfs : fs) : NULL);
+      (void)teal_record_field_add_to(ls, shapefs, var->teal_field_shape,
+				     var->teal_field, have, e->teal_sig,
+				     e->teal_sig != 0 ?
+				     (e->teal_sigfs ? e->teal_sigfs : fs) : NULL);
     } else if (ls->teal_strict) {
       lj_lex_error(ls, 0, LJ_ERR_XTEAL,
 		   "unknown record field, ", strdata(var->teal_field));
     }
     return;
   }
-  have.type = fs->teal_shape_ftype[idx];
-  have.nilok = fs->teal_shape_fnil[idx];
-  have.sig = fs->teal_shape_fsig[idx];
-  have.sigfs = fs->teal_shape_fsigfs[idx];
+  have.type = shapefs->teal_shape_ftype[idx];
+  have.nilok = shapefs->teal_shape_fnil[idx];
+  have.sig = shapefs->teal_shape_fsig[idx];
+  have.sigfs = shapefs->teal_shape_fsigfs[idx];
   teal_check_assign(ls, have, e, "record field type mismatch, ");
   if (have.type == TEAL_T_FUNCTION && e->teal_sig != 0) {
-    fs->teal_shape_fsig[idx] = e->teal_sig;
-    fs->teal_shape_fsigfs[idx] = e->teal_sigfs ? e->teal_sigfs : fs;
+    shapefs->teal_shape_fsig[idx] = e->teal_sig;
+    shapefs->teal_shape_fsigfs[idx] = e->teal_sigfs ? e->teal_sigfs : fs;
   }
 }
 
@@ -2022,6 +2134,7 @@ static MSize var_lookup_(FuncState *fs, GCstr *name, ExpDesc *e, int first)
       e->teal_type = fs->teal_vtype[reg];
       e->teal_nil = fs->teal_vnil[reg];
       e->teal_shape = fs->teal_vshape[reg];
+      e->teal_shapefs = fs->teal_vshapefs[reg];
       e->teal_sig = fs->teal_vsig[reg];
       e->teal_sigfs = fs->teal_vsigfs[reg];
       if (!first)
@@ -2034,6 +2147,8 @@ static MSize var_lookup_(FuncState *fs, GCstr *name, ExpDesc *e, int first)
 	e->k = VUPVAL;
 	return vidx;
       }
+      if (e->k == VGLOBAL)
+	teal_apply_global(fs, e);
     }
   } else {  /* Not found in any function, must be a global. */
     expr_init(e, VGLOBAL, 0);
@@ -2525,6 +2640,7 @@ static void fs_init(LexState *ls, FuncState *fs)
   memset(fs->teal_vsig, 0, sizeof(fs->teal_vsig));
   memset(fs->teal_vsigfs, 0, sizeof(fs->teal_vsigfs));
   memset(fs->teal_vshape, 0, sizeof(fs->teal_vshape));
+  memset(fs->teal_vshapefs, 0, sizeof(fs->teal_vshapefs));
   memset(fs->teal_shapes, 0, sizeof(fs->teal_shapes));
   memset(fs->teal_shape_field, 0, sizeof(fs->teal_shape_field));
   memset(fs->teal_shape_owner, 0, sizeof(fs->teal_shape_owner));
@@ -2537,12 +2653,17 @@ static void fs_init(LexState *ls, FuncState *fs)
   memset(fs->teal_sig_pnil, 0, sizeof(fs->teal_sig_pnil));
   memset(fs->teal_alias_name, 0, sizeof(fs->teal_alias_name));
   memset(fs->teal_alias_type, 0, sizeof(fs->teal_alias_type));
+  memset(fs->teal_global_name, 0, sizeof(fs->teal_global_name));
+  memset(fs->teal_global_type, 0, sizeof(fs->teal_global_type));
+  memset(fs->teal_global_shape, 0, sizeof(fs->teal_global_shape));
+  memset(fs->teal_global_shapefs, 0, sizeof(fs->teal_global_shapefs));
   memset(fs->teal_paramtype, 0, sizeof(fs->teal_paramtype));
   memset(fs->teal_paramnil, 0, sizeof(fs->teal_paramnil));
   memset(fs->teal_paramoptional, 0, sizeof(fs->teal_paramoptional));
   fs->teal_nsig = 0;
   fs->teal_nsigparam = 0;
   fs->teal_nalias = 0;
+  fs->teal_nglobal = 0;
   fs->teal_nparam = 0;
   fs->teal_nshape = 0;
   fs->teal_nfield = 0;
@@ -2604,7 +2725,9 @@ static void expr_field(LexState *ls, ExpDesc *v)
   FuncState *fs = ls->fs;
   ExpDesc key;
   uint16_t shape;
+  FuncState *shapefs;
   shape = v->teal_shape;
+  shapefs = v->teal_shapefs ? v->teal_shapefs : fs;
   expr_toanyreg(fs, v);
   lj_lex_next(ls);  /* Skip dot or colon. */
   expr_str(ls, &key);
@@ -2612,17 +2735,19 @@ static void expr_field(LexState *ls, ExpDesc *v)
   v->teal_type = TEAL_T_UNKNOWN;
   v->teal_nil = 0;
   v->teal_shape = 0;
+  v->teal_shapefs = NULL;
   v->teal_sig = 0;
   v->teal_sigfs = NULL;
   if (shape != 0) {
-    int idx = teal_record_field_find(fs, shape, key.u.sval);
+    int idx = teal_record_field_find(shapefs, shape, key.u.sval);
     v->teal_field_shape = shape;
+    v->teal_field_shapefs = shapefs;
     v->teal_field = key.u.sval;
     if (idx >= 0) {
-      v->teal_type = fs->teal_shape_ftype[idx];
-      v->teal_nil = fs->teal_shape_fnil[idx];
-      v->teal_sig = fs->teal_shape_fsig[idx];
-      v->teal_sigfs = fs->teal_shape_fsigfs[idx];
+      v->teal_type = shapefs->teal_shape_ftype[idx];
+      v->teal_nil = shapefs->teal_shape_fnil[idx];
+      v->teal_sig = shapefs->teal_shape_fsig[idx];
+      v->teal_sigfs = shapefs->teal_shape_fsigfs[idx];
     }
   }
 }
@@ -2811,7 +2936,8 @@ static void parse_chunk(LexState *ls);
 
 /* Parse body of a function. */
 static void parse_body(LexState *ls, ExpDesc *e, int needself,
-		       uint16_t self_shape, BCLine line)
+		       uint16_t self_shape, FuncState *self_shapefs,
+		       BCLine line)
 {
   FuncState fs, *pfs = ls->fs;
   FuncScope bl;
@@ -2823,7 +2949,8 @@ static void parse_body(LexState *ls, ExpDesc *e, int needself,
   fs.linedefined = line;
   fs.numparams = (uint8_t)parse_params(ls, needself);
   if (needself && self_shape != 0)
-    (void)teal_record_shape_clone(ls, pfs, self_shape, 0);
+    (void)teal_record_shape_clone(ls, self_shapefs ? self_shapefs : pfs,
+				  self_shape, 0);
   if (ls->teal && lex_opt(ls, ':')) {
     TealTypeDesc ret = teal_parse_type(ls);
     fs.teal_rettype = ret.type;
@@ -3039,7 +3166,7 @@ static void expr_simple(LexState *ls, ExpDesc *v)
     return;
   case TK_function:
     lj_lex_next(ls);
-    parse_body(ls, v, 0, 0, ls->linenumber);
+    parse_body(ls, v, 0, 0, NULL, ls->linenumber);
     return;
   default:
     expr_primary(ls, v);
@@ -3315,23 +3442,28 @@ static void parse_teal_local_record(LexState *ls)
 static void parse_teal_global_record(LexState *ls)
 {
   FuncState *fs = ls->fs;
+  TealTypeDesc t;
   ExpDesc var, val;
   GCstr *name = lex_str(ls);
   BCReg reg = fs->freereg;
+  uint16_t sid;
   expr_init(&var, VGLOBAL, 0);
   var.u.sval = name;
   bcreg_reserve(fs, 1);
   expr_init(&val, VNONRELOC, reg);
   val.teal_type = TEAL_T_RECORD;
   bcemit_AD(fs, BC_TNEW, reg, 0);
+  sid = teal_record_shape_new(ls, reg);
+  val.teal_shape = sid;
+  val.teal_shapefs = fs;
+  teal_type_unknown(&t);
+  t.type = TEAL_T_RECORD;
+  teal_global_define(ls, name, t, sid, fs);
+  teal_parse_record_body(ls, sid);
   bcemit_store(fs, &var, &val);
-  if (ls->tok == TK_end)
-    lj_lex_next(ls);
-  else
-    teal_skip_type_decl(ls);
 }
 
-static int parse_teal_typeonly_stmt(LexState *ls)
+static int parse_teal_typeonly_stmt(LexState *ls, int isglobal)
 {
   if (lex_optteal(ls, "type")) {
     FuncState *fs = ls->fs;
@@ -3352,8 +3484,14 @@ static int parse_teal_typeonly_stmt(LexState *ls)
       lj_lex_error(ls, 0, LJ_ERR_XTEAL,
 		   "generic type aliases are not wired into the native checker yet, ",
 		   strdata(name));
-    lex_check(ls, '=');
-    t = teal_parse_type(ls);
+    if (lex_opt(ls, '=')) {
+      t = teal_parse_type(ls);
+    } else if (isglobal) {
+      teal_type_unknown(&t);
+      t.type = TEAL_T_RECORD;
+    } else {
+      lex_check(ls, '=');
+    }
     if (t.type == TEAL_T_UNKNOWN)
       lj_lex_error(ls, 0, LJ_ERR_XTEAL,
 		   "type alias needs a type, ", strdata(name));
@@ -3369,6 +3507,65 @@ static int parse_teal_typeonly_stmt(LexState *ls)
     return 1;
   }
   return 0;
+}
+
+static void parse_teal_global_decl(LexState *ls)
+{
+  FuncState *fs = ls->fs;
+  ExpDesc var, e;
+  TealTypeDesc t;
+  int annotated = 0;
+  uint16_t shape = 0;
+  FuncState *shapefs = NULL;
+  GCstr *name = lex_str(ls);
+  teal_type_unknown(&t);
+  if (ls->tok == ':') {
+    annotated = 1;
+    t = teal_opt_type(ls);
+    if (t.type == TEAL_T_UNKNOWN)
+      lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		   "global declaration needs a type, ", strdata(name));
+  } else if (ls->tok != '=') {
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		 "global declaration needs a type or initializer, ",
+		 strdata(name));
+  }
+  if (!lex_opt(ls, '=')) {
+    teal_global_define(ls, name, t, 0, NULL);
+    return;
+  }
+  expr_init(&var, VGLOBAL, 0);
+  var.u.sval = name;
+  expr(ls, &e);
+  if (annotated) {
+    teal_check_assign(ls, t, &e, "global type mismatch, ");
+  } else {
+    t.type = e.teal_type;
+    t.nilok = e.teal_nil;
+    t.sig = e.teal_sig;
+    t.sigfs = e.teal_sigfs ? e.teal_sigfs : fs;
+  }
+  shape = e.teal_shape;
+  shapefs = e.teal_shapefs ? e.teal_shapefs : fs;
+  teal_global_define(ls, name, t, shape, shapefs);
+  bcemit_store(fs, &var, &e);
+}
+
+static void parse_teal_global_func(LexState *ls, BCLine line)
+{
+  FuncState *fs = ls->fs;
+  ExpDesc var, b;
+  GCstr *name;
+  lj_lex_next(ls);  /* Skip 'function'. */
+  name = lex_str(ls);
+  if (ls->tok == '.' || ls->tok == ':')
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		 "global function must use a simple name, ", strdata(name));
+  expr_init(&var, VGLOBAL, 0);
+  var.u.sval = name;
+  parse_body(ls, &b, 0, 0, NULL, line);
+  bcemit_store(fs, &var, &b);
+  fs->bcbase[fs->pc - 1].line = line;
 }
 
 static void teal_parse_record_body(LexState *ls, uint16_t sid)
@@ -3403,7 +3600,7 @@ static void parse_local(LexState *ls)
 {
   if (lex_optteal(ls, "record")) {
     parse_teal_local_record(ls);
-  } else if (parse_teal_typeonly_stmt(ls)) {
+  } else if (parse_teal_typeonly_stmt(ls, 0)) {
     return;
   } else if (lex_opt(ls, TK_function)) {  /* Local function declaration. */
     ExpDesc v, b;
@@ -3413,7 +3610,7 @@ static void parse_local(LexState *ls)
     v.u.s.aux = fs->varmap[fs->freereg];
     bcreg_reserve(fs, 1);
     var_add(ls, 1);
-    parse_body(ls, &b, 0, 0, ls->linenumber);
+    parse_body(ls, &b, 0, 0, NULL, ls->linenumber);
     /* bcemit_store(fs, &v, &b) without setting VSTACK_VAR_RW. */
     expr_free(fs, &b);
     expr_toreg(fs, &b, v.u.s.info);
@@ -3501,6 +3698,7 @@ static void parse_func(LexState *ls, BCLine line)
   ExpDesc v, b;
   int needself = 0;
   uint16_t self_shape = 0;
+  FuncState *self_shapefs = NULL;
   lj_lex_next(ls);  /* Skip 'function'. */
   /* Parse function name. */
   var_lookup(ls, &v);
@@ -3509,9 +3707,10 @@ static void parse_func(LexState *ls, BCLine line)
   if (ls->tok == ':') {  /* Optional colon to signify method call. */
     needself = 1;
     self_shape = v.teal_shape;
+    self_shapefs = v.teal_shapefs;
     expr_field(ls, &v);
   }
-  parse_body(ls, &b, needself, self_shape, line);
+  parse_body(ls, &b, needself, self_shape, self_shapefs, line);
   fs = ls->fs;
   bcemit_store(fs, &v, &b);
   fs->bcbase[fs->pc - 1].line = line;  /* Set line for the store. */
@@ -3914,17 +4113,22 @@ static int parse_stmt(LexState *ls)
     if (lex_optteal(ls, "global")) {
       if (lex_optteal(ls, "record"))
 	parse_teal_global_record(ls);
-      else if (parse_teal_typeonly_stmt(ls))
+      else if (parse_teal_typeonly_stmt(ls, 1))
 	break;
+      else if (ls->tok == TK_function)
+	parse_teal_global_func(ls, line);
       else
-	lj_lex_error(ls, 0, LJ_ERR_XTEAL,
-		     "unsupported global declaration, ", "");
+	parse_teal_global_decl(ls);
       break;
     } else if (lex_optteal(ls, "record")) {
-      parse_teal_global_record(ls);
-      break;
-    } else if (parse_teal_typeonly_stmt(ls)) {
-      break;
+      lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		   "record needs to be declared with 'local record' or 'global record', ",
+		   "");
+    } else if (lex_isteal(ls, "type") || lex_isteal(ls, "interface") ||
+	       lex_isteal(ls, "enum")) {
+      lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		   "types need to be declared with 'local type' or 'global type', ",
+		   "");
     }
     parse_call_assign(ls);
     break;

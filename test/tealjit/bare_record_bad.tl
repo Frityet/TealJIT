@@ -1,0 +1,2 @@
+record Box
+end

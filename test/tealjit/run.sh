@@ -21,6 +21,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" function_type_annotations.tl
 "$LUAJIT" record_method_colon_call.tl
 "$LUAJIT" type_aliases.tl
+"$LUAJIT" global_declarations.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   echo "as_bad.tl unexpectedly passed" >&2
@@ -153,6 +154,54 @@ if "$LUAJIT" type_alias_builtin_bad.tl >/tmp/tealjit-alias-builtin.out 2>&1; the
   exit 1
 fi
 grep -q "type alias shadows builtin" /tmp/tealjit-alias-builtin.out
+
+if "$LUAJIT" bare_type_bad.tl >/tmp/tealjit-bare-type.out 2>&1; then
+  echo "bare_type_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "types need to be declared" /tmp/tealjit-bare-type.out
+
+if "$LUAJIT" bare_record_bad.tl >/tmp/tealjit-bare-record.out 2>&1; then
+  echo "bare_record_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "record needs to be declared" /tmp/tealjit-bare-record.out
+
+if "$LUAJIT" global_decl_type_bad.tl >/tmp/tealjit-global-decl-type.out 2>&1; then
+  echo "global_decl_type_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "global type mismatch" /tmp/tealjit-global-decl-type.out
+
+if "$LUAJIT" global_assign_type_bad.tl >/tmp/tealjit-global-assign-type.out 2>&1; then
+  echo "global_assign_type_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "global type mismatch" /tmp/tealjit-global-assign-type.out
+
+if "$LUAJIT" global_function_call_bad.tl >/tmp/tealjit-global-call.out 2>&1; then
+  echo "global_function_call_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "function argument type mismatch" /tmp/tealjit-global-call.out
+
+if "$LUAJIT" global_function_dotted_bad.tl >/tmp/tealjit-global-func-dotted.out 2>&1; then
+  echo "global_function_dotted_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "global function must use a simple name" /tmp/tealjit-global-func-dotted.out
+
+if "$LUAJIT" global_record_field_bad.tl >/tmp/tealjit-global-record-field.out 2>&1; then
+  echo "global_record_field_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "record field type mismatch" /tmp/tealjit-global-record-field.out
+
+if "$LUAJIT" global_record_unknown_bad.tl >/tmp/tealjit-global-record-unknown.out 2>&1; then
+  echo "global_record_unknown_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "unknown record field" /tmp/tealjit-global-record-unknown.out
 
 if "$LUAJIT" record_method_colon_arg_bad.tl >/tmp/tealjit-method-arg.out 2>&1; then
   echo "record_method_colon_arg_bad.tl unexpectedly passed" >&2
