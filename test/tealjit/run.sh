@@ -25,6 +25,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" table_types.tl
 "$LUAJIT" for_iterators.tl
 "$LUAJIT" for_next_iterators.tl
+"$LUAJIT" tuple_types.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   echo "as_bad.tl unexpectedly passed" >&2
@@ -295,6 +296,42 @@ if "$LUAJIT" for_next_non_table_bad.tl >/tmp/tealjit-for-next-non-table.out 2>&1
   exit 1
 fi
 grep -q "attempting next" /tmp/tealjit-for-next-non-table.out
+
+if "$LUAJIT" tuple_index_oob_bad.tl >/tmp/tealjit-tuple-oob.out 2>&1; then
+  echo "tuple_index_oob_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "tuple index out of range" /tmp/tealjit-tuple-oob.out
+
+if "$LUAJIT" tuple_value_bad.tl >/tmp/tealjit-tuple-value.out 2>&1; then
+  echo "tuple_value_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-tuple-value.out
+
+if "$LUAJIT" tuple_too_long_bad.tl >/tmp/tealjit-tuple-too-long.out 2>&1; then
+  echo "tuple_too_long_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-tuple-too-long.out
+
+if "$LUAJIT" tuple_key_value_bad.tl >/tmp/tealjit-tuple-key-value.out 2>&1; then
+  echo "tuple_key_value_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-tuple-key-value.out
+
+if "$LUAJIT" tuple_write_bad.tl >/tmp/tealjit-tuple-write.out 2>&1; then
+  echo "tuple_write_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "tuple value type mismatch" /tmp/tealjit-tuple-write.out
+
+if "$LUAJIT" tuple_write_oob_bad.tl >/tmp/tealjit-tuple-write-oob.out 2>&1; then
+  echo "tuple_write_oob_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "tuple index out of range" /tmp/tealjit-tuple-write-oob.out
 
 if "$LUAJIT" record_method_colon_arg_bad.tl >/tmp/tealjit-method-arg.out 2>&1; then
   echo "record_method_colon_arg_bad.tl unexpectedly passed" >&2

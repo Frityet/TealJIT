@@ -84,6 +84,7 @@ typedef struct ExpDesc {
   uint8_t teal_index_keynil;  /* Static key type includes nil. */
   uint16_t teal_index_keytab;  /* Static table key type for table indexing. */
   FuncState *teal_index_keytabfs;  /* Owner of teal_index_keytab. */
+  uint16_t teal_index_ikey;  /* Positive integer key, if statically known. */
   uint8_t teal_iter;	/* Builtin iterator result metadata kind. */
   uint8_t teal_iter_ktype;
   uint8_t teal_iter_knil;
@@ -147,6 +148,7 @@ typedef struct TealFuncSig {
 
 typedef struct TealTableEntry {
   uint16_t owner;
+  uint16_t ikey;
   TealTypeDesc key;
   TealTypeDesc val;
 } TealTableEntry;
@@ -157,6 +159,7 @@ typedef struct TealTableType {
   uint16_t first;
   uint16_t count;
   uint16_t owner;
+  uint8_t tuple;
   uint8_t literal;
   uint8_t open;
 } TealTableType;
@@ -203,6 +206,7 @@ static LJ_AINLINE void expr_init(ExpDesc *e, ExpKind k, uint32_t info)
   e->teal_index_keynil = 0;
   e->teal_index_keytab = 0;
   e->teal_index_keytabfs = NULL;
+  e->teal_index_ikey = 0;
   e->teal_iter = TEAL_ITER_NONE;
   e->teal_iter_ktype = TEAL_T_UNKNOWN;
   e->teal_iter_knil = 0;
@@ -1358,7 +1362,8 @@ static int teal_alias_lookup(FuncState *fs, GCstr *s, TealTypeDesc *td)
 static uint16_t teal_table_type_new(LexState *ls, FuncState *fs,
 				    TealTypeDesc key, TealTypeDesc val,
 				    uint16_t first, uint16_t count,
-				    uint16_t owner, int literal, int open);
+				    uint16_t owner, int tuple, int literal,
+				    int open);
 
 static void teal_type_from_name(LexState *ls, TealTypeDesc *td, GCstr *s)
 {
@@ -1374,7 +1379,7 @@ static void teal_type_from_name(LexState *ls, TealTypeDesc *td, GCstr *s)
     val.type = TEAL_T_ANY;
     teal_type_unknown(td);
     td->type = TEAL_T_TABLE;
-    td->tab = teal_table_type_new(ls, ls->fs, key, val, 0, 0, 0, 0, 0);
+    td->tab = teal_table_type_new(ls, ls->fs, key, val, 0, 0, 0, 0, 0, 0);
     td->tabfs = ls->fs;
     return;
   }
@@ -1535,7 +1540,8 @@ static void teal_set_local_type(FuncState *fs, BCReg reg, TealTypeDesc t)
 static uint16_t teal_table_type_new(LexState *ls, FuncState *fs,
 				    TealTypeDesc key, TealTypeDesc val,
 				    uint16_t first, uint16_t count,
-				    uint16_t owner, int literal, int open)
+				    uint16_t owner, int tuple, int literal,
+				    int open)
 {
   TealTableType *tt;
   if (fs->teal_ntable >= TEAL_MAX_TABLE_TYPES)
@@ -1546,6 +1552,7 @@ static uint16_t teal_table_type_new(LexState *ls, FuncState *fs,
   tt->first = first;
   tt->count = count;
   tt->owner = owner;
+  tt->tuple = (uint8_t)tuple;
   tt->literal = (uint8_t)literal;
   tt->open = (uint8_t)open;
   fs->teal_ntable++;
@@ -1553,7 +1560,7 @@ static uint16_t teal_table_type_new(LexState *ls, FuncState *fs,
 }
 
 static uint16_t teal_table_entry_add(LexState *ls, FuncState *fs,
-				     uint16_t owner,
+				     uint16_t owner, uint16_t ikey,
 				     TealTypeDesc key, TealTypeDesc val)
 {
   TealTableEntry *ent;
@@ -1561,10 +1568,72 @@ static uint16_t teal_table_entry_add(LexState *ls, FuncState *fs,
     lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many table literal entries, ", "");
   ent = &fs->teal_table_entries[fs->teal_ntableentry];
   ent->owner = owner;
+  ent->ikey = ikey;
   ent->key = key;
   ent->val = val;
   fs->teal_ntableentry++;
   return fs->teal_ntableentry;
+}
+
+static TealTypeDesc *teal_tuple_entry(TealTableType *tt, FuncState *fs,
+				      uint16_t ikey)
+{
+  uint16_t i;
+  if (tt == NULL || fs == NULL || !tt->tuple || tt->owner == 0 || ikey == 0)
+    return NULL;
+  for (i = 0; i < fs->teal_ntableentry; i++) {
+    TealTableEntry *ent = &fs->teal_table_entries[i];
+    if (ent->owner == tt->owner && ent->ikey == ikey)
+      return &ent->val;
+  }
+  return NULL;
+}
+
+static int teal_tuple_homogeneous_val(TealTableType *tt, FuncState *fs,
+				      TealTypeDesc *val)
+{
+  TealTypeDesc first;
+  uint16_t i, seen = 0;
+  teal_type_unknown(&first);
+  if (tt == NULL || fs == NULL || !tt->tuple || tt->owner == 0)
+    return 0;
+  for (i = 0; i < fs->teal_ntableentry; i++) {
+    TealTableEntry *ent = &fs->teal_table_entries[i];
+    if (ent->owner != tt->owner)
+      continue;
+    if (seen == 0) {
+      first = ent->val;
+    } else if (!teal_type_desc_assignable(first, ent->val) ||
+	       !teal_type_desc_assignable(ent->val, first)) {
+      return 0;
+    }
+    seen++;
+  }
+  if (seen == 0 || seen != tt->count)
+    return 0;
+  *val = first;
+  return 1;
+}
+
+static uint16_t teal_integer_key(ExpDesc *e)
+{
+  if (!expr_isnumk(e))
+    return 0;
+#if LJ_DUALNUM
+  if (tvisint(expr_numtv(e))) {
+    int32_t k = intV(expr_numtv(e));
+    return k > 0 && k <= 0xffff ? (uint16_t)k : 0;
+  }
+#else
+  {
+    int64_t i64;
+    int32_t k;
+    if (lj_num2int_cond(expr_numberV(e), i64, k,
+			(int32_t)i64 > 0 && (int32_t)i64 <= 0xffff))
+      return (uint16_t)k;
+  }
+#endif
+  return 0;
 }
 
 static int teal_type_assignable(TealTypeDesc want, ExpDesc *e)
@@ -1641,6 +1710,20 @@ static int teal_type_desc_assignable(TealTypeDesc want, TealTypeDesc got)
     uint16_t i;
     if (wtab == NULL || gtab == NULL)
       return 1;
+    if (wtab->tuple && gtab->literal) {
+      for (i = 0; i < got.tabfs->teal_ntableentry; i++) {
+	TealTableEntry *ent = &got.tabfs->teal_table_entries[i];
+	TealTypeDesc *wval;
+	if (ent->owner != gtab->owner)
+	  continue;
+	if (ent->ikey == 0 || ent->ikey > wtab->count)
+	  return 0;
+	wval = teal_tuple_entry(wtab, want.tabfs, ent->ikey);
+	if (wval == NULL || !teal_type_desc_assignable(*wval, ent->val))
+	  return 0;
+      }
+      return 1;
+    }
     if (gtab->literal) {
       for (i = 0; i < got.tabfs->teal_ntableentry; i++) {
 	TealTableEntry *ent = &got.tabfs->teal_table_entries[i];
@@ -1861,14 +1944,36 @@ static TealTypeDesc teal_type_clone(LexState *ls, FuncState *dstfs,
 static uint16_t teal_table_type_clone(LexState *ls, FuncState *dstfs,
 				      TealTypeDesc *t)
 {
-  TealTableType *src = teal_table_type(t->tabfs, t->tab);
+  FuncState *srcfs = t->tabfs;
+  TealTableType *src = teal_table_type(srcfs, t->tab);
   TealTypeDesc key, val;
+  uint16_t i;
   if (src == NULL)
     return 0;
   key = teal_type_clone(ls, dstfs, src->key);
   val = teal_type_clone(ls, dstfs, src->val);
+  if (src->tuple) {
+    uint16_t owner = (uint16_t)(dstfs->teal_ntable+1);
+    uint16_t id;
+    t->tabfs = dstfs;
+    id = teal_table_type_new(ls, dstfs, key, val, 0, src->count,
+			     owner, 1, 0, src->open);
+    for (i = 0; i < srcfs->teal_ntableentry; i++) {
+      TealTableEntry *ent = &srcfs->teal_table_entries[i];
+      if (ent->owner != src->owner)
+	continue;
+      {
+	TealTypeDesc entkey = teal_type_clone(ls, dstfs, ent->key);
+	TealTypeDesc entval = teal_type_clone(ls, dstfs, ent->val);
+	(void)teal_table_entry_add(ls, dstfs, owner, ent->ikey,
+				   entkey, entval);
+      }
+    }
+    return id;
+  }
   t->tabfs = dstfs;
-  return teal_table_type_new(ls, dstfs, key, val, 0, 0, 0, 0, src->open);
+  return teal_table_type_new(ls, dstfs, key, val, 0, 0, 0, 0, 0,
+			     src->open);
 }
 
 static uint16_t teal_func_sig_new(LexState *ls, FuncState *pfs, FuncState *cfs)
@@ -2266,6 +2371,35 @@ static void teal_check_table_index_read(FuncState *fs, ExpDesc *e)
   if (tt == NULL)
     return;
   key = teal_type_from_index_key(e);
+  if (tt->tuple) {
+    TealTypeDesc *slot = teal_tuple_entry(tt, tabfs, e->teal_index_ikey);
+    if (e->teal_index_ikey != 0) {
+      if (slot == NULL) {
+	if (ls->teal_strict)
+	  lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		       "tuple index out of range, ", "");
+	return;
+      }
+      teal_expr_set_type(e, *slot);
+      return;
+    } else {
+      TealTypeDesc intkey, val;
+      teal_type_unknown(&intkey);
+      intkey.type = TEAL_T_INTEGER;
+      if (ls->teal_strict && key.type != TEAL_T_UNKNOWN &&
+	  !teal_type_desc_assignable(intkey, key))
+	lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		     "tuple key type mismatch, ", teal_type_name(intkey.type));
+      if (teal_tuple_homogeneous_val(tt, tabfs, &val)) {
+	teal_expr_set_type(e, val);
+	return;
+      }
+      if (ls->teal_strict)
+	lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		     "cannot index tuple with non-constant key, ", "");
+      return;
+    }
+  }
   if (ls->teal_strict && key.type != TEAL_T_UNKNOWN &&
       !teal_type_desc_assignable(tt->key, key))
     lj_lex_error(ls, 0, LJ_ERR_XTEAL,
@@ -2287,6 +2421,35 @@ static void teal_check_table_index_store(FuncState *fs, ExpDesc *var,
     return;
   key = teal_type_from_index_key(var);
   val = teal_type_from_expr(fs, e);
+  if (tt->tuple) {
+    TealTypeDesc *slot = teal_tuple_entry(tt, tabfs, var->teal_index_ikey);
+    if (var->teal_index_ikey != 0) {
+      if (slot == NULL) {
+	if (ls->teal_strict)
+	  lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		       "tuple index out of range, ", "");
+	return;
+      }
+      teal_check_assign(ls, *slot, e, "tuple value type mismatch, ");
+      return;
+    } else {
+      TealTypeDesc intkey, slotval;
+      teal_type_unknown(&intkey);
+      intkey.type = TEAL_T_INTEGER;
+      if (ls->teal_strict && key.type != TEAL_T_UNKNOWN &&
+	  !teal_type_desc_assignable(intkey, key))
+	lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		     "tuple key type mismatch, ", teal_type_name(intkey.type));
+      if (teal_tuple_homogeneous_val(tt, tabfs, &slotval)) {
+	teal_check_assign(ls, slotval, e, "tuple value type mismatch, ");
+	return;
+      }
+      if (ls->teal_strict)
+	lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		     "cannot index tuple with non-constant key, ", "");
+      return;
+    }
+  }
   if (tt->open && tt->key.type == TEAL_T_UNKNOWN) {
     tt->key = key;
   } else if (ls->teal_strict && key.type != TEAL_T_UNKNOWN &&
@@ -2434,6 +2597,10 @@ static TealTypeDesc teal_parse_table_type(LexState *ls)
   FuncState *fs = ls->fs;
   TealTypeDesc td, key, val;
   int ismap = 0;
+  int istuple = 0;
+  uint16_t tuple_entry[TEAL_MAX_TABLE_ENTRIES];
+  uint16_t nentry = 0;
+  uint16_t i;
   teal_type_unknown(&td);
   teal_type_unknown(&key);
   teal_type_unknown(&val);
@@ -2451,9 +2618,20 @@ static TealTypeDesc teal_parse_table_type(LexState *ls)
     } else {
       key.type = TEAL_T_INTEGER;
       val = first;
-      while (lex_opt(ls, ',')) {
-	TealTypeDesc part = teal_parse_type(ls);
-	teal_type_merge(&val, part);
+      if (ls->tok == ',') {
+	istuple = 1;
+	tuple_entry[nentry++] = (uint16_t)
+	  (teal_table_entry_add(ls, fs, 0, 1, key, first)-1);
+	while (lex_opt(ls, ',')) {
+	  TealTypeDesc part = teal_parse_type(ls);
+	  if (nentry >= TEAL_MAX_TABLE_ENTRIES)
+	    lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many tuple entries, ", "");
+	  tuple_entry[nentry] = (uint16_t)
+	    (teal_table_entry_add(ls, fs, 0, (uint16_t)(nentry+1),
+				  key, part)-1);
+	  nentry++;
+	  teal_type_merge(&val, part);
+	}
       }
     }
     lex_check(ls, '}');
@@ -2462,7 +2640,15 @@ static TealTypeDesc teal_parse_table_type(LexState *ls)
     val.type = TEAL_T_ANY;
   if (key.type == TEAL_T_UNKNOWN)
     key.type = TEAL_T_ANY;
-  td.tab = teal_table_type_new(ls, fs, key, val, 0, 0, 0, 0, 0);
+  if (istuple) {
+    uint16_t owner = (uint16_t)(fs->teal_ntable+1);
+    for (i = 0; i < nentry; i++)
+      fs->teal_table_entries[tuple_entry[i]].owner = owner;
+    td.tab = teal_table_type_new(ls, fs, key, val, 0, nentry,
+				 owner, 1, 0, 0);
+  } else {
+    td.tab = teal_table_type_new(ls, fs, key, val, 0, 0, 0, 0, 0, 0);
+  }
   td.tabfs = fs;
   return td;
 }
@@ -3215,6 +3401,7 @@ static void expr_index(FuncState *fs, ExpDesc *t, ExpDesc *e)
   FuncState *tabfs = t->teal_tabfs ? t->teal_tabfs : fs;
   TealTypeDesc keytype = teal_type_from_expr(fs, e);
   TealTableType *tt = tab != 0 ? teal_table_type(tabfs, tab) : NULL;
+  uint16_t ikey = teal_integer_key(e);
   /* Already called: expr_toval(fs, e). */
   t->k = VINDEXED;
   t->teal_type = TEAL_T_UNKNOWN;
@@ -3231,6 +3418,7 @@ static void expr_index(FuncState *fs, ExpDesc *t, ExpDesc *e)
   t->teal_index_keynil = 0;
   t->teal_index_keytab = 0;
   t->teal_index_keytabfs = NULL;
+  t->teal_index_ikey = 0;
   if (tt != NULL) {
     t->teal_index_tab = tab;
     t->teal_index_tabfs = tabfs;
@@ -3238,7 +3426,13 @@ static void expr_index(FuncState *fs, ExpDesc *t, ExpDesc *e)
     t->teal_index_keynil = keytype.nilok;
     t->teal_index_keytab = keytype.tab;
     t->teal_index_keytabfs = keytype.tabfs;
+    t->teal_index_ikey = ikey;
     teal_expr_set_type(t, tt->val);
+    if (tt->tuple && ikey != 0) {
+      TealTypeDesc *slot = teal_tuple_entry(tt, tabfs, ikey);
+      if (slot != NULL)
+	teal_expr_set_type(t, *slot);
+    }
   }
   if (expr_isnumk(e)) {
 #if LJ_DUALNUM
@@ -3360,9 +3554,9 @@ static void expr_table(LexState *ls, ExpDesc *e)
   teal_type_unknown(&table_key);
   teal_type_unknown(&table_val);
   if (ls->teal) {
-    if (fs->teal_ntableowner == 0xffff)
+    if (fs->teal_ntableowner == 0x7fff)
       lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many table literals, ", "");
-    table_owner = ++fs->teal_ntableowner;
+    table_owner = (uint16_t)(0x8000u | ++fs->teal_ntableowner);
   }
   expr_init(e, VNONRELOC, freg);
   bcreg_reserve(fs, 1);
@@ -3390,7 +3584,8 @@ static void expr_table(LexState *ls, ExpDesc *e)
     if (ls->teal) {
       TealTypeDesc kt = teal_type_from_expr(fs, &key);
       TealTypeDesc vt = teal_type_from_expr(fs, &val);
-      (void)teal_table_entry_add(ls, fs, table_owner, kt, vt);
+      uint16_t ikey = teal_integer_key(&key);
+      (void)teal_table_entry_add(ls, fs, table_owner, ikey, kt, vt);
       table_count++;
       teal_type_merge(&table_key, kt);
       teal_type_merge(&table_val, vt);
@@ -3467,8 +3662,8 @@ static void expr_table(LexState *ls, ExpDesc *e)
     e->teal_type = TEAL_T_TABLE;
     e->teal_nil = 0;
     e->teal_tab = teal_table_type_new(ls, fs, table_key, table_val,
-				      table_first, table_count, table_owner, 1,
-				      table_count == 0);
+				      table_first, table_count, table_owner, 0,
+				      1, table_count == 0);
     e->teal_tabfs = fs;
   }
 }
