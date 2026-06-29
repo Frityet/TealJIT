@@ -266,6 +266,11 @@ static int wasm_trace_supported(const GCtrace *T)
 	  !wasm_ref_can_type(T, ir->op2, wasm_ir_valtype(ir)))
 	return 0;
       break;
+    case IR_CONV:
+      if (ir->op2 != IRCONV_NUM_INT || !irt_isnum(ir->t) ||
+	  !wasm_ref_can_type(T, ir->op1, LJ_WASM_TYPE_I32))
+	return 0;
+      break;
     case IR_LE: {
       uint8_t type = wasm_ref_fixed_type(T, ir->op1);
       if (!type) type = wasm_ref_fixed_type(T, ir->op2);
@@ -305,6 +310,17 @@ static int wasm_emit_arith(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
 	 ir->o == IR_SUB ? LJ_WASM_OP_I32_SUB : LJ_WASM_OP_I32_MUL;
   }
   lj_wasm_putu8(ctx->body, op);
+  lj_wasm_putu8(ctx->body, LJ_WASM_OP_LOCAL_SET);
+  lj_wasm_putu32v(ctx->body, wasm_ir_local(ref));
+  return 1;
+}
+
+static int wasm_emit_conv(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
+{
+  if (ir->op2 != IRCONV_NUM_INT || !irt_isnum(ir->t) ||
+      !wasm_emit_ref(ctx, ir->op1, LJ_WASM_TYPE_I32))
+    return 0;
+  lj_wasm_putu8(ctx->body, LJ_WASM_OP_F64_CONVERT_I32_S);
   lj_wasm_putu8(ctx->body, LJ_WASM_OP_LOCAL_SET);
   lj_wasm_putu32v(ctx->body, wasm_ir_local(ref));
   return 1;
@@ -446,6 +462,10 @@ static int wasm_emit_trace_body(lua_State *L, const GCtrace *T, SBuf *body)
     case IR_SUB:
     case IR_MUL:
       if (!wasm_emit_arith(&ctx, ref, ir))
+	return 0;
+      break;
+    case IR_CONV:
+      if (!wasm_emit_conv(&ctx, ref, ir))
 	return 0;
       break;
     case IR_LE:
