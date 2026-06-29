@@ -34,6 +34,7 @@ typedef enum LJWasmScalarType {
 } LJWasmScalarType;
 
 #define LJ_WASM_FFI_MAX_ARGS		16u
+#define LJ_WASM_FFI_CALL_ABI_VERSION	1u
 
 typedef enum LJWasmFFILoc {
   LJ_WASM_FFI_LOC_NONE,
@@ -65,6 +66,10 @@ typedef struct LJWasmFFISlot {
 
 typedef struct LJWasmFFICall {
   LJWasmFFISig sig;
+  uint32_t abi_version;		/* LJ_WASM_FFI_CALL_ABI_VERSION. */
+  uint32_t ccall_size;		/* sizeof(CCallState) in the guest. */
+  uint32_t func_offset;		/* Byte offset of CCallState.func. */
+  uint32_t reserved;		/* Reserved for ABI-compatible extensions. */
   LJWasmFFISlot ret;
   LJWasmFFISlot args[LJ_WASM_FFI_MAX_ARGS];
 } LJWasmFFICall;

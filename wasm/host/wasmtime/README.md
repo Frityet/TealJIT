@@ -10,10 +10,10 @@ named `lj_wasm_import_*`.
 
 | Guest import | Scaffold behavior | Real Wasmtime responsibility |
 | --- | --- | --- |
-| `lj_wasm_import_ffi_load` | Validates output pointer, clears it, delegates to a hook, otherwise returns `LJ_WASM_HOST_NYI`. | Read the guest C string, load or resolve a library handle, store an opaque handle. |
-| `lj_wasm_import_ffi_unload` | Delegates to a hook when present. | Release the host library/symbol-table handle. |
-| `lj_wasm_import_ffi_symbol` | Validates inputs, clears output, delegates, otherwise returns `NYI`. | Read the guest C string and resolve a symbol from a loaded handle. |
-| `lj_wasm_import_ffi_call` | Validates opaque pointers plus `LJWasmFFICall`, delegates, otherwise returns `NYI`. | Read the scalar call descriptor, use its `CCallState` offsets to marshal arguments/results, and reject descriptors marked unsupported. |
+| `lj_wasm_import_ffi_load` | Validates output pointer, clears it, delegates to a hook, otherwise uses `dlopen` plus a tagged opaque handle when built with libffi support or returns `NYI`. | Read the guest C string, load or resolve a library handle, store an opaque handle. |
+| `lj_wasm_import_ffi_unload` | Delegates to a hook when present, otherwise invalidates tagged libffi library handles. | Release the host library/symbol-table handle. |
+| `lj_wasm_import_ffi_symbol` | Validates inputs, clears output, delegates, otherwise uses `dlsym` plus a tagged opaque symbol handle when built with libffi support or returns `NYI`. A null handle means the default namespace in libffi mode. | Read the guest C string and resolve a symbol from a loaded handle. |
+| `lj_wasm_import_ffi_call` | Validates opaque pointers plus `LJWasmFFICall`, delegates, otherwise performs fixed numeric scalar calls with libffi when available. | Read the scalar call descriptor, use its `CCallState` offsets to marshal arguments/results, and reject descriptors marked unsupported. |
 | `lj_wasm_import_ffi_callback_new` | Clears output, delegates, otherwise returns `NYI`. | Allocate a callable Wasm table/host function handle for a LuaJIT callback slot. |
 | `lj_wasm_import_ffi_callback_slot` | Validates handle/output, delegates, otherwise returns `NYI`. | Map a callback handle back to its LuaJIT callback slot for `callback:set/free`. |
 | `lj_wasm_import_ffi_callback_free` | Delegates to a hook when present. | Release a callback table/host function handle. |
@@ -59,11 +59,24 @@ and test stub. The Rust pseudocode shows the memory-translation boundary that a
 real Wasmtime linker needs.
 
 FFI calls additionally pass `LJWasmFFICall`, a compact descriptor emitted by the
-guest FFI call setup. It describes each scalar argument/result with a
-`LJWasmScalarType`, `LJWasmFFILoc`, byte offset into `CCallState`, original CType
-size, and unsigned flag. Hosts can implement explicit-library scalar calls from
-this descriptor before they learn how to decode arbitrary LuaJIT CType graphs;
-`LJ_WASM_FFI_SIG_F_UNSUPPORTED` means the call still needs a richer path.
+guest FFI call setup. It carries `LJ_WASM_FFI_CALL_ABI_VERSION`,
+`ccall_size`, the callee slot via `func_offset`, and each scalar argument/result
+with a `LJWasmScalarType`, `LJWasmFFILoc`, byte offset into `CCallState`,
+original CType size, and unsigned flag. Hosts can implement numeric
+explicit-library scalar calls from this descriptor before they learn how to
+decode arbitrary LuaJIT CType graphs; `LJ_WASM_FFI_SIG_F_UNSUPPORTED` means the
+call still needs a richer path. Pointer arguments/results are intentionally
+rejected by the default libffi path until a real Wasmtime embedding translates
+guest memory offsets into checked host views.
+
+When `pkg-config libffi` succeeds, the scaffold defines
+`LJ_WASMTIME_ENABLE_LIBFFI=1`, links `libffi`/`libdl`, and provides a default
+fixed-arity numeric scalar backend using `dlopen`, `dlsym`, and `ffi_call`. The
+C scaffold stores tagged native handle objects because it runs in-process; a
+real Wasmtime host should map guest-visible IDs to equivalent host-owned handle
+table entries. Set `LIBFFI_LIBS=` when running `make` to force the older
+`NYI`-only defaults, or override `DL_LIBS` when the platform does not use
+`-ldl`.
 
 ## Validation
 
@@ -74,4 +87,6 @@ make -C wasm/host/wasmtime check
 ```
 
 This checks that the scaffold is valid C and runs the host hook contract test
-without requiring Rust, Cargo, or a Wasmtime SDK.
+without requiring Rust, Cargo, or a Wasmtime SDK. With libffi available, the
+contract test also loads `libm`, calls `cos(0.0)`, resolves default-namespace
+`abs`, and checks descriptor rejection cases through the descriptor path.

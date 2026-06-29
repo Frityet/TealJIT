@@ -113,6 +113,9 @@ static void ccall_wasm_init(LJWasmFFICall *call, CTInfo info, CType *ctr,
   uint32_t offset = 0;
 
   memset(call, 0, sizeof(*call));
+  call->abi_version = LJ_WASM_FFI_CALL_ABI_VERSION;
+  call->ccall_size = sizeof(*cc);
+  call->func_offset = (uint32_t)((uint8_t *)&cc->func - (uint8_t *)cc);
   ret = &call->ret;
   type = ccall_wasm_scalar_type(ctr->info, ctr->size);
   call->sig.flags = (uint8_t)((info & CTF_VARARG) ?

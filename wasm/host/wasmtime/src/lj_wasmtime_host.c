@@ -1,6 +1,12 @@
 #include "lj_wasmtime_host.h"
 
+#include <stdlib.h>
 #include <string.h>
+
+#if LJ_WASMTIME_ENABLE_LIBFFI
+#include <dlfcn.h>
+#include <ffi.h>
+#endif
 
 const LJWasmtimeImportSpec lj_wasmtime_host_imports[] = {
     {LJ_WASMTIME_IMPORT_MODULE, LJ_WASMTIME_IMPORT_FFI_LOAD,
@@ -39,6 +45,331 @@ const size_t lj_wasmtime_host_import_count =
     sizeof(lj_wasmtime_host_imports) / sizeof(lj_wasmtime_host_imports[0]);
 
 static LJWasmtimeHostHooks lj_wasmtime_hooks;
+
+#if LJ_WASMTIME_ENABLE_LIBFFI
+#define LJ_WASMTIME_FFI_HANDLE_MAGIC 0x4c4a4649u
+#define LJ_WASMTIME_FFI_KIND_LIB 1u
+#define LJ_WASMTIME_FFI_KIND_SYMBOL 2u
+
+typedef struct LJWasmtimeFFIHandle {
+  uint32_t magic;
+  uint32_t kind;
+  void *value;
+  struct LJWasmtimeFFIHandle *owner;
+} LJWasmtimeFFIHandle;
+
+typedef union LJWasmtimeFFIValue {
+  int8_t s8;
+  uint8_t u8;
+  int16_t s16;
+  uint16_t u16;
+  int32_t s32;
+  uint32_t u32;
+  int64_t s64;
+  uint64_t u64;
+  float f32;
+  double f64;
+} LJWasmtimeFFIValue;
+
+static LJWasmtimeFFIHandle *lj_wasmtime_ffi_handle(LJWasmHostHandle handle,
+                                                   uint32_t kind) {
+  LJWasmtimeFFIHandle *h = (LJWasmtimeFFIHandle *)handle;
+  if (h == NULL || h->magic != LJ_WASMTIME_FFI_HANDLE_MAGIC ||
+      h->kind != kind || h->value == NULL) {
+    return NULL;
+  }
+  return h;
+}
+
+static int lj_wasmtime_ffi_new_handle(uint32_t kind, void *value,
+                                      LJWasmtimeFFIHandle *owner,
+                                      LJWasmHostHandle *out) {
+  LJWasmtimeFFIHandle *h;
+  if (value == NULL || out == NULL) {
+    return LJ_WASM_HOST_ERR;
+  }
+  h = (LJWasmtimeFFIHandle *)malloc(sizeof(*h));
+  if (h == NULL) {
+    return LJ_WASM_HOST_ERR;
+  }
+  h->magic = LJ_WASMTIME_FFI_HANDLE_MAGIC;
+  h->kind = kind;
+  h->value = value;
+  h->owner = owner;
+  *out = (LJWasmHostHandle)h;
+  return LJ_WASM_HOST_OK;
+}
+
+static void lj_wasmtime_ffi_invalidate_handle(LJWasmtimeFFIHandle *h) {
+  h->magic = 0;
+  h->kind = 0;
+  h->value = NULL;
+  h->owner = NULL;
+}
+
+static ffi_type *lj_wasmtime_ffi_int_type(uint32_t size, uint16_t flags) {
+  const int is_unsigned = (flags & LJ_WASM_FFI_SLOT_F_UNSIGNED) != 0;
+  switch (size) {
+  case 1:
+    return is_unsigned ? &ffi_type_uint8 : &ffi_type_sint8;
+  case 2:
+    return is_unsigned ? &ffi_type_uint16 : &ffi_type_sint16;
+  case 4:
+    return is_unsigned ? &ffi_type_uint32 : &ffi_type_sint32;
+  case 8:
+    return is_unsigned ? &ffi_type_uint64 : &ffi_type_sint64;
+  default:
+    return NULL;
+  }
+}
+
+static ffi_type *lj_wasmtime_ffi_slot_type(const LJWasmFFISlot *slot) {
+  switch ((LJWasmScalarType)slot->type) {
+  case LJ_WASM_SCALAR_VOID:
+    return &ffi_type_void;
+  case LJ_WASM_SCALAR_I32:
+  case LJ_WASM_SCALAR_I64:
+    return lj_wasmtime_ffi_int_type(slot->size, slot->flags);
+  case LJ_WASM_SCALAR_F32:
+    return slot->size == sizeof(float) ? &ffi_type_float : NULL;
+  case LJ_WASM_SCALAR_F64:
+    return slot->size == sizeof(double) ? &ffi_type_double : NULL;
+  case LJ_WASM_SCALAR_PTR:
+  case LJ_WASM_SCALAR_AGG:
+  default:
+    return NULL;
+  }
+}
+
+static int lj_wasmtime_ffi_slot_has_value_loc(const LJWasmFFISlot *slot) {
+  return slot->loc == LJ_WASM_FFI_LOC_GPR ||
+         slot->loc == LJ_WASM_FFI_LOC_FPR ||
+         slot->loc == LJ_WASM_FFI_LOC_STACK;
+}
+
+static void *lj_wasmtime_ffi_cc_ptr(struct CCallState *cc, uint32_t offset) {
+  return (void *)((uint8_t *)cc + offset);
+}
+
+static int lj_wasmtime_ffi_range_ok(const LJWasmFFICall *call,
+                                    uint32_t offset, uint32_t size) {
+  return size <= call->ccall_size && offset <= call->ccall_size - size;
+}
+
+static int lj_wasmtime_ffi_slot_range_ok(const LJWasmFFICall *call,
+                                         const LJWasmFFISlot *slot) {
+  return slot->size > 0 && lj_wasmtime_ffi_range_ok(call, slot->offset,
+                                                    slot->size);
+}
+
+static int lj_wasmtime_ffi_sig_status(const LJWasmFFICall *call) {
+  const uint8_t known_flags =
+      LJ_WASM_FFI_SIG_F_VARARG | LJ_WASM_FFI_SIG_F_UNSUPPORTED;
+  if (call->abi_version != LJ_WASM_FFI_CALL_ABI_VERSION ||
+      call->ccall_size == 0 || call->reserved != 0 ||
+      call->sig.rettype != call->ret.type ||
+      call->sig.nargs > LJ_WASM_FFI_MAX_ARGS ||
+      (call->sig.flags & (uint8_t)~known_flags) != 0) {
+    return LJ_WASM_HOST_ERR;
+  }
+  if ((call->sig.flags &
+       (LJ_WASM_FFI_SIG_F_UNSUPPORTED | LJ_WASM_FFI_SIG_F_VARARG)) != 0) {
+    return LJ_WASM_HOST_NYI;
+  }
+  if (!lj_wasmtime_ffi_range_ok(call, call->func_offset,
+                                sizeof(LJWasmHostHandle))) {
+    return LJ_WASM_HOST_ERR;
+  }
+  return LJ_WASM_HOST_OK;
+}
+
+static int lj_wasmtime_ffi_slot_status(const LJWasmFFICall *call,
+                                       const LJWasmFFISlot *slot,
+                                       int is_ret) {
+  if (slot->flags & (uint16_t)~LJ_WASM_FFI_SLOT_F_UNSIGNED) {
+    return LJ_WASM_HOST_ERR;
+  }
+  if (slot->type > LJ_WASM_SCALAR_AGG) {
+    return LJ_WASM_HOST_ERR;
+  }
+  if (slot->type == LJ_WASM_SCALAR_AGG || slot->type == LJ_WASM_SCALAR_PTR ||
+      slot->loc == LJ_WASM_FFI_LOC_RETREF) {
+    return LJ_WASM_HOST_NYI;
+  }
+  if (slot->type == LJ_WASM_SCALAR_VOID) {
+    return is_ret && slot->loc == LJ_WASM_FFI_LOC_NONE ?
+           LJ_WASM_HOST_OK : LJ_WASM_HOST_ERR;
+  }
+  if (!lj_wasmtime_ffi_slot_has_value_loc(slot) ||
+      !lj_wasmtime_ffi_slot_range_ok(call, slot)) {
+    return LJ_WASM_HOST_ERR;
+  }
+  return lj_wasmtime_ffi_slot_type(slot) != NULL ? LJ_WASM_HOST_OK :
+         LJ_WASM_HOST_NYI;
+}
+
+static int lj_wasmtime_ffi_load_value(struct CCallState *cc,
+                                      const LJWasmFFISlot *slot,
+                                      LJWasmtimeFFIValue *value) {
+  void *src = lj_wasmtime_ffi_cc_ptr(cc, slot->offset);
+  switch ((LJWasmScalarType)slot->type) {
+  case LJ_WASM_SCALAR_I32:
+  case LJ_WASM_SCALAR_I64:
+    switch (slot->size) {
+    case 1:
+      if (slot->flags & LJ_WASM_FFI_SLOT_F_UNSIGNED) {
+        memcpy(&value->u8, src, sizeof(value->u8));
+      } else {
+        memcpy(&value->s8, src, sizeof(value->s8));
+      }
+      return LJ_WASM_HOST_OK;
+    case 2:
+      if (slot->flags & LJ_WASM_FFI_SLOT_F_UNSIGNED) {
+        memcpy(&value->u16, src, sizeof(value->u16));
+      } else {
+        memcpy(&value->s16, src, sizeof(value->s16));
+      }
+      return LJ_WASM_HOST_OK;
+    case 4:
+      if (slot->flags & LJ_WASM_FFI_SLOT_F_UNSIGNED) {
+        memcpy(&value->u32, src, sizeof(value->u32));
+      } else {
+        memcpy(&value->s32, src, sizeof(value->s32));
+      }
+      return LJ_WASM_HOST_OK;
+    case 8:
+      if (slot->flags & LJ_WASM_FFI_SLOT_F_UNSIGNED) {
+        memcpy(&value->u64, src, sizeof(value->u64));
+      } else {
+        memcpy(&value->s64, src, sizeof(value->s64));
+      }
+      return LJ_WASM_HOST_OK;
+    default:
+      return LJ_WASM_HOST_NYI;
+    }
+  case LJ_WASM_SCALAR_F32:
+    memcpy(&value->f32, src, sizeof(value->f32));
+    return LJ_WASM_HOST_OK;
+  case LJ_WASM_SCALAR_F64:
+    memcpy(&value->f64, src, sizeof(value->f64));
+    return LJ_WASM_HOST_OK;
+  default:
+    return LJ_WASM_HOST_NYI;
+  }
+}
+
+static int lj_wasmtime_ffi_store_value(struct CCallState *cc,
+                                       const LJWasmFFISlot *slot,
+                                       const LJWasmtimeFFIValue *value) {
+  void *dst = lj_wasmtime_ffi_cc_ptr(cc, slot->offset);
+  switch ((LJWasmScalarType)slot->type) {
+  case LJ_WASM_SCALAR_I32:
+  case LJ_WASM_SCALAR_I64:
+    switch (slot->size) {
+    case 1:
+      memcpy(dst, (slot->flags & LJ_WASM_FFI_SLOT_F_UNSIGNED) ?
+                  (const void *)&value->u8 : (const void *)&value->s8,
+             sizeof(value->u8));
+      return LJ_WASM_HOST_OK;
+    case 2:
+      memcpy(dst, (slot->flags & LJ_WASM_FFI_SLOT_F_UNSIGNED) ?
+                  (const void *)&value->u16 : (const void *)&value->s16,
+             sizeof(value->u16));
+      return LJ_WASM_HOST_OK;
+    case 4:
+      memcpy(dst, (slot->flags & LJ_WASM_FFI_SLOT_F_UNSIGNED) ?
+                  (const void *)&value->u32 : (const void *)&value->s32,
+             sizeof(value->u32));
+      return LJ_WASM_HOST_OK;
+    case 8:
+      memcpy(dst, (slot->flags & LJ_WASM_FFI_SLOT_F_UNSIGNED) ?
+                  (const void *)&value->u64 : (const void *)&value->s64,
+             sizeof(value->u64));
+      return LJ_WASM_HOST_OK;
+    default:
+      return LJ_WASM_HOST_NYI;
+    }
+  case LJ_WASM_SCALAR_F32:
+    memcpy(dst, &value->f32, sizeof(value->f32));
+    return LJ_WASM_HOST_OK;
+  case LJ_WASM_SCALAR_F64:
+    memcpy(dst, &value->f64, sizeof(value->f64));
+    return LJ_WASM_HOST_OK;
+  default:
+    return LJ_WASM_HOST_NYI;
+  }
+}
+
+static int lj_wasmtime_ffi_read_func(struct CCallState *cc,
+                                     const LJWasmFFICall *call,
+                                     void (**fn)(void)) {
+  LJWasmHostHandle handle;
+  LJWasmtimeFFIHandle *symbol;
+  if (sizeof(handle) != sizeof(*fn) || sizeof(handle) != sizeof(symbol)) {
+    return LJ_WASM_HOST_ERR;
+  }
+  memcpy(&handle, lj_wasmtime_ffi_cc_ptr(cc, call->func_offset),
+         sizeof(handle));
+  symbol = lj_wasmtime_ffi_handle(handle, LJ_WASMTIME_FFI_KIND_SYMBOL);
+  if (symbol == NULL ||
+      (symbol->owner != NULL &&
+       symbol->owner->magic != LJ_WASMTIME_FFI_HANDLE_MAGIC)) {
+    return LJ_WASM_HOST_ERR;
+  }
+  memcpy(fn, &symbol->value, sizeof(*fn));
+  return LJ_WASM_HOST_OK;
+}
+
+static int lj_wasmtime_ffi_default_call(struct CCallState *cc,
+                                        const LJWasmFFICall *call) {
+  ffi_type *arg_types[LJ_WASM_FFI_MAX_ARGS];
+  void *arg_values[LJ_WASM_FFI_MAX_ARGS];
+  LJWasmtimeFFIValue arg_storage[LJ_WASM_FFI_MAX_ARGS];
+  LJWasmtimeFFIValue ret_storage;
+  ffi_type *ret_type;
+  ffi_cif cif;
+  void *ret_value = NULL;
+  void (*fn)(void);
+  int status;
+  uint16_t i;
+
+  status = lj_wasmtime_ffi_sig_status(call);
+  if (status != LJ_WASM_HOST_OK)
+    return status;
+
+  ret_type = lj_wasmtime_ffi_slot_type(&call->ret);
+  status = lj_wasmtime_ffi_slot_status(call, &call->ret, 1);
+  if (status != LJ_WASM_HOST_OK)
+    return status;
+  if (call->ret.type != LJ_WASM_SCALAR_VOID) {
+    ret_value = &ret_storage;
+  }
+
+  for (i = 0; i < call->sig.nargs; i++) {
+    const LJWasmFFISlot *slot = &call->args[i];
+    status = lj_wasmtime_ffi_slot_status(call, slot, 0);
+    if (status != LJ_WASM_HOST_OK)
+      return status;
+    arg_types[i] = lj_wasmtime_ffi_slot_type(slot);
+    status = lj_wasmtime_ffi_load_value(cc, slot, &arg_storage[i]);
+    if (status != LJ_WASM_HOST_OK)
+      return status;
+    arg_values[i] = &arg_storage[i];
+  }
+
+  if (lj_wasmtime_ffi_read_func(cc, call, &fn) != LJ_WASM_HOST_OK) {
+    return LJ_WASM_HOST_ERR;
+  }
+  if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, call->sig.nargs, ret_type,
+                   arg_types) != FFI_OK) {
+    return LJ_WASM_HOST_ERR;
+  }
+  ffi_call(&cif, fn, ret_value, arg_values);
+  if (call->ret.type != LJ_WASM_SCALAR_VOID)
+    return lj_wasmtime_ffi_store_value(cc, &call->ret, &ret_storage);
+  return LJ_WASM_HOST_OK;
+}
+#endif
 
 void lj_wasmtime_host_set_hooks(const LJWasmtimeHostHooks *hooks) {
   if (hooks == NULL) {
@@ -114,13 +445,39 @@ int lj_wasm_import_ffi_load(const char *name, int global,
     return lj_wasmtime_hooks.ffi_load(lj_wasmtime_hooks.ctx, name, global,
                                       handle);
   }
+#if LJ_WASMTIME_ENABLE_LIBFFI
+  {
+    void *lib = dlopen(name, RTLD_LAZY | (global ? RTLD_GLOBAL : RTLD_LOCAL));
+    if (lib == NULL) {
+      return LJ_WASM_HOST_ERR;
+    }
+    if (lj_wasmtime_ffi_new_handle(LJ_WASMTIME_FFI_KIND_LIB, lib, NULL,
+                                   handle) != LJ_WASM_HOST_OK) {
+      dlclose(lib);
+      return LJ_WASM_HOST_ERR;
+    }
+    return LJ_WASM_HOST_OK;
+  }
+#else
   return LJ_WASM_HOST_NYI;
+#endif
 }
 
 void lj_wasm_import_ffi_unload(LJWasmHostHandle handle) {
   if (lj_wasmtime_hooks.ffi_unload != NULL) {
     lj_wasmtime_hooks.ffi_unload(lj_wasmtime_hooks.ctx, handle);
+    return;
   }
+#if LJ_WASMTIME_ENABLE_LIBFFI
+  if (handle != NULL) {
+    LJWasmtimeFFIHandle *lib =
+        lj_wasmtime_ffi_handle(handle, LJ_WASMTIME_FFI_KIND_LIB);
+    if (lib != NULL) {
+      dlclose(lib->value);
+      lj_wasmtime_ffi_invalidate_handle(lib);
+    }
+  }
+#endif
 }
 
 int lj_wasm_import_ffi_symbol(LJWasmHostHandle handle, const char *name,
@@ -128,14 +485,39 @@ int lj_wasm_import_ffi_symbol(LJWasmHostHandle handle, const char *name,
   if (symbol != NULL) {
     *symbol = NULL;
   }
-  if (handle == NULL || name == NULL || symbol == NULL) {
+  if (name == NULL || symbol == NULL) {
     return LJ_WASM_HOST_ERR;
   }
   if (lj_wasmtime_hooks.ffi_symbol != NULL) {
     return lj_wasmtime_hooks.ffi_symbol(lj_wasmtime_hooks.ctx, handle, name,
                                         symbol);
   }
+#if LJ_WASMTIME_ENABLE_LIBFFI
+  {
+    LJWasmtimeFFIHandle *lib = NULL;
+    void *lookup = RTLD_DEFAULT;
+    void *addr;
+    if (handle != NULL) {
+      lib = lj_wasmtime_ffi_handle(handle, LJ_WASMTIME_FFI_KIND_LIB);
+      if (lib == NULL) {
+        return LJ_WASM_HOST_ERR;
+      }
+      lookup = lib->value;
+    }
+    dlerror();
+    addr = dlsym(lookup, name);
+    if (dlerror() != NULL) {
+      return LJ_WASM_HOST_ERR;
+    }
+    return lj_wasmtime_ffi_new_handle(LJ_WASMTIME_FFI_KIND_SYMBOL, addr, lib,
+                                      symbol);
+  }
+#else
+  if (handle == NULL) {
+    return LJ_WASM_HOST_ERR;
+  }
   return LJ_WASM_HOST_NYI;
+#endif
 }
 
 int lj_wasm_import_ffi_call(struct CTState *cts, struct CType *ct,
@@ -148,7 +530,11 @@ int lj_wasm_import_ffi_call(struct CTState *cts, struct CType *ct,
     return lj_wasmtime_hooks.ffi_call(lj_wasmtime_hooks.ctx, cts, ct, cc,
                                       call);
   }
+#if LJ_WASMTIME_ENABLE_LIBFFI
+  return lj_wasmtime_ffi_default_call(cc, call);
+#else
   return LJ_WASM_HOST_NYI;
+#endif
 }
 
 int lj_wasm_import_ffi_callback_new(uint32_t slot, uint32_t ctypeid,

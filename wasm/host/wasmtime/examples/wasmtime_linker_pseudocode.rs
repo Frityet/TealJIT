@@ -70,9 +70,10 @@ fn register_luajit_host_imports(linker: &mut Linker<HostState>) -> anyhow::Resul
         "lj_wasm_import_ffi_call",
         |mut caller: Caller<'_, HostState>, cts: i64, ct: i64, cc: i64, call: i64| -> i32 {
             let _ = (caller, cts, ct, cc, call);
-            // TODO: read LJWasmFFICall from `call`, reject descriptors marked
-            // unsupported, then use slot offsets into `cc` to marshal scalar
-            // arguments/results across the host boundary.
+            // TODO: read LJWasmFFICall from `call`, validate its ABI version
+            // and `ccall_size`, reject descriptors marked unsupported, resolve
+            // the callee via `func_offset`, then use slot offsets into `cc` to
+            // marshal scalar arguments/results across the host boundary.
             NYI
         },
     )?;

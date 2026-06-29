@@ -1,8 +1,13 @@
 #include "lj_wasmtime_host.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+#ifndef LJ_WASMTIME_TEST_LIBM
+#define LJ_WASMTIME_TEST_LIBM "libm.so.6"
+#endif
 
 static double load_f64(const void *base, uint32_t offset) {
   double value;
@@ -13,6 +18,22 @@ static double load_f64(const void *base, uint32_t offset) {
 static void store_f64(void *base, uint32_t offset, double value) {
   memcpy((uint8_t *)base + offset, &value, sizeof(value));
 }
+
+#if LJ_WASMTIME_ENABLE_LIBFFI
+static int32_t load_i32(const void *base, uint32_t offset) {
+  int32_t value;
+  memcpy(&value, (const uint8_t *)base + offset, sizeof(value));
+  return value;
+}
+
+static void store_i32(void *base, uint32_t offset, int32_t value) {
+  memcpy((uint8_t *)base + offset, &value, sizeof(value));
+}
+
+static void store_ptr(void *base, uint32_t offset, void *value) {
+  memcpy((uint8_t *)base + offset, &value, sizeof(value));
+}
+#endif
 
 typedef struct TestCtx {
   int trace_handle;
@@ -80,6 +101,8 @@ static int test_ffi_call(void *ud, struct CTState *cts, struct CType *ct,
   assert(ct != NULL);
   assert(cc != NULL);
   assert(call != NULL);
+  assert(call->abi_version == LJ_WASM_FFI_CALL_ABI_VERSION);
+  assert(call->ccall_size == 128);
   assert(call->sig.ctypeid == 1234);
   assert(call->sig.nargs == 2);
   assert(call->sig.rettype == LJ_WASM_SCALAR_F64);
@@ -183,6 +206,11 @@ int main(void) {
   LJWasmFFICall fake_call;
   LJWasmJITModule bad_module;
 
+  assert(sizeof(LJWasmFFISig) == 8);
+  assert(offsetof(LJWasmFFICall, sig) == 0);
+  assert(offsetof(LJWasmFFICall, ret) >
+         offsetof(LJWasmFFICall, reserved));
+
   memset(&module, 0, sizeof(module));
   module.bytes = module_bytes;
   module.size = sizeof(module_bytes);
@@ -244,9 +272,12 @@ int main(void) {
          LJ_WASM_HOST_ERR);
   assert(lj_wasm_import_ffi_load(NULL, 0, &handle) == LJ_WASM_HOST_ERR);
   assert(handle == NULL);
+#if !LJ_WASMTIME_ENABLE_LIBFFI
   assert(lj_wasm_import_ffi_load("libm", 1, &handle) == LJ_WASM_HOST_NYI);
   assert(handle == NULL);
-  assert(lj_wasm_import_ffi_symbol(NULL, "sin", &symbol) == LJ_WASM_HOST_ERR);
+#endif
+  assert(lj_wasm_import_ffi_symbol(NULL, "__lj_wasm_missing_symbol__",
+                                   &symbol) == LJ_WASM_HOST_ERR);
   assert(symbol == NULL);
   memset(&fake_call, 0, sizeof(fake_call));
   assert(lj_wasm_import_ffi_call(NULL, (struct CType *)&fake_ct,
@@ -293,6 +324,9 @@ int main(void) {
   fake_call.sig.ctypeid = 1234;
   fake_call.sig.nargs = 2;
   fake_call.sig.rettype = LJ_WASM_SCALAR_F64;
+  fake_call.abi_version = LJ_WASM_FFI_CALL_ABI_VERSION;
+  fake_call.ccall_size = sizeof(fake_cc);
+  fake_call.func_offset = 0;
   fake_call.ret.type = LJ_WASM_SCALAR_F64;
   fake_call.ret.loc = LJ_WASM_FFI_LOC_FPR;
   fake_call.ret.offset = 32;
@@ -359,6 +393,88 @@ int main(void) {
   assert(ctx.free_calls == 1);
 
   lj_wasmtime_host_clear_hooks();
+#if LJ_WASMTIME_ENABLE_LIBFFI
+  handle = NULL;
+  symbol = NULL;
+  assert(lj_wasm_import_ffi_load(LJ_WASMTIME_TEST_LIBM, 0, &handle) ==
+         LJ_WASM_HOST_OK);
+  assert(handle != NULL);
+  assert(lj_wasm_import_ffi_symbol(handle, "cos", &symbol) == LJ_WASM_HOST_OK);
+  assert(symbol != NULL);
+
+  memset(fake_cc, 0, sizeof(fake_cc));
+  memset(&fake_call, 0, sizeof(fake_call));
+  fake_call.sig.nargs = 1;
+  fake_call.sig.rettype = LJ_WASM_SCALAR_F64;
+  fake_call.abi_version = LJ_WASM_FFI_CALL_ABI_VERSION;
+  fake_call.ccall_size = sizeof(fake_cc);
+  fake_call.func_offset = 0;
+  fake_call.ret.type = LJ_WASM_SCALAR_F64;
+  fake_call.ret.loc = LJ_WASM_FFI_LOC_FPR;
+  fake_call.ret.offset = 32;
+  fake_call.ret.size = sizeof(double);
+  fake_call.args[0].type = LJ_WASM_SCALAR_F64;
+  fake_call.args[0].loc = LJ_WASM_FFI_LOC_FPR;
+  fake_call.args[0].offset = 16;
+  fake_call.args[0].size = sizeof(double);
+  store_ptr(fake_cc, fake_call.func_offset, symbol);
+  store_f64(fake_cc, fake_call.args[0].offset, 0.0);
+  assert(lj_wasm_import_ffi_call((struct CTState *)&fake_cts,
+                                 (struct CType *)&fake_ct,
+                                 (struct CCallState *)fake_cc,
+                                 &fake_call) == LJ_WASM_HOST_OK);
+  assert(load_f64(fake_cc, fake_call.ret.offset) == 1.0);
+  lj_wasm_import_ffi_unload(handle);
+  assert(lj_wasm_import_ffi_call((struct CTState *)&fake_cts,
+                                 (struct CType *)&fake_ct,
+                                 (struct CCallState *)fake_cc,
+                                 &fake_call) == LJ_WASM_HOST_ERR);
+  handle = NULL;
+
+  assert(lj_wasm_import_ffi_symbol(NULL, "abs", &symbol) == LJ_WASM_HOST_OK);
+  assert(symbol != NULL);
+  memset(fake_cc, 0, sizeof(fake_cc));
+  memset(&fake_call, 0, sizeof(fake_call));
+  fake_call.sig.nargs = 1;
+  fake_call.sig.rettype = LJ_WASM_SCALAR_I32;
+  fake_call.abi_version = LJ_WASM_FFI_CALL_ABI_VERSION;
+  fake_call.ccall_size = sizeof(fake_cc);
+  fake_call.func_offset = 0;
+  fake_call.ret.type = LJ_WASM_SCALAR_I32;
+  fake_call.ret.loc = LJ_WASM_FFI_LOC_GPR;
+  fake_call.ret.offset = 40;
+  fake_call.ret.size = sizeof(int32_t);
+  fake_call.args[0].type = LJ_WASM_SCALAR_I32;
+  fake_call.args[0].loc = LJ_WASM_FFI_LOC_GPR;
+  fake_call.args[0].offset = 16;
+  fake_call.args[0].size = sizeof(int32_t);
+  store_ptr(fake_cc, fake_call.func_offset, symbol);
+  store_i32(fake_cc, fake_call.args[0].offset, -7);
+  assert(lj_wasm_import_ffi_call((struct CTState *)&fake_cts,
+                                 (struct CType *)&fake_ct,
+                                 (struct CCallState *)fake_cc,
+                                 &fake_call) == LJ_WASM_HOST_OK);
+  assert(load_i32(fake_cc, fake_call.ret.offset) == 7);
+
+  fake_call.sig.flags = LJ_WASM_FFI_SIG_F_UNSUPPORTED;
+  assert(lj_wasm_import_ffi_call((struct CTState *)&fake_cts,
+                                 (struct CType *)&fake_ct,
+                                 (struct CCallState *)fake_cc,
+                                 &fake_call) == LJ_WASM_HOST_NYI);
+  fake_call.sig.flags = 0;
+  fake_call.args[0].type = LJ_WASM_SCALAR_PTR;
+  assert(lj_wasm_import_ffi_call((struct CTState *)&fake_cts,
+                                 (struct CType *)&fake_ct,
+                                 (struct CCallState *)fake_cc,
+                                 &fake_call) == LJ_WASM_HOST_NYI);
+  fake_call.args[0].type = LJ_WASM_SCALAR_I32;
+  fake_call.reserved = 1;
+  assert(lj_wasm_import_ffi_call((struct CTState *)&fake_cts,
+                                 (struct CType *)&fake_ct,
+                                 (struct CCallState *)fake_cc,
+                                 &fake_call) == LJ_WASM_HOST_ERR);
+#endif
+  handle = &fake_lua;
   assert(lj_wasm_import_jit_enter(handle, &fake_lua, &fake_base,
                                   &fake_exit_state, 0) ==
          LJ_WASM_HOST_NYI);
