@@ -77,6 +77,9 @@ typedef enum TealType {
   TEAL_T_INTEGER,
   TEAL_T_NUMBER,
   TEAL_T_STRING,
+  TEAL_T_FUNCTION,
+  TEAL_T_THREAD,
+  TEAL_T_USERDATA,
   TEAL_T_RECORD
 } TealType;
 
@@ -175,6 +178,7 @@ typedef enum BinOpr {
   OPR_CONCAT,
   OPR_NE, OPR_EQ,
   OPR_LT, OPR_GE, OPR_LE, OPR_GT,
+  OPR_IS,
   OPR_AND, OPR_OR,
   OPR_NOBINOPR
 } BinOpr;
@@ -1121,6 +1125,8 @@ static void teal_type_from_name(TealTypeDesc *td, GCstr *s)
   else if (len == 7 && memcmp(p, "integer", 7) == 0) td->type = TEAL_T_INTEGER;
   else if (len == 6 && memcmp(p, "string", 6) == 0) td->type = TEAL_T_STRING;
   else if (len == 7 && memcmp(p, "boolean", 7) == 0) td->type = TEAL_T_BOOLEAN;
+  else if (len == 6 && memcmp(p, "thread", 6) == 0) td->type = TEAL_T_THREAD;
+  else if (len == 8 && memcmp(p, "userdata", 8) == 0) td->type = TEAL_T_USERDATA;
   else td->type = TEAL_T_RECORD;
 }
 
@@ -1133,6 +1139,9 @@ static const char *teal_type_name(uint8_t t)
   case TEAL_T_INTEGER: return "integer";
   case TEAL_T_NUMBER: return "number";
   case TEAL_T_STRING: return "string";
+  case TEAL_T_FUNCTION: return "function";
+  case TEAL_T_THREAD: return "thread";
+  case TEAL_T_USERDATA: return "userdata";
   case TEAL_T_RECORD: return "record";
   default: return "unknown";
   }
@@ -1155,6 +1164,149 @@ static int teal_type_assignable(TealTypeDesc want, ExpDesc *e)
   return 0;
 }
 
+static int teal_type_matches(uint8_t got, uint8_t want)
+{
+  if (want == TEAL_T_ANY || got == want)
+    return 1;
+  return want == TEAL_T_NUMBER && got == TEAL_T_INTEGER;
+}
+
+static int teal_is_definitely_true(ExpDesc *e, TealTypeDesc want)
+{
+  if (want.type == TEAL_T_ANY)
+    return 1;
+  if (e->teal_type == TEAL_T_UNKNOWN || e->teal_type == TEAL_T_ANY)
+    return 0;
+  if (want.type == TEAL_T_NIL)
+    return e->teal_type == TEAL_T_NIL;
+  return !e->teal_nil && teal_type_matches(e->teal_type, want.type);
+}
+
+static int teal_is_definitely_false(ExpDesc *e, TealTypeDesc want)
+{
+  if (want.type == TEAL_T_ANY ||
+      e->teal_type == TEAL_T_UNKNOWN || e->teal_type == TEAL_T_ANY)
+    return 0;
+  if (want.type == TEAL_T_NIL)
+    return e->teal_type != TEAL_T_NIL && !e->teal_nil;
+  if (e->teal_type == TEAL_T_NUMBER && want.type == TEAL_T_INTEGER)
+    return 0;
+  if (teal_type_matches(e->teal_type, want.type))
+    return 0;
+  return 1;
+}
+
+static const char *teal_lua_type_name(uint8_t t)
+{
+  switch (t) {
+  case TEAL_T_BOOLEAN: return "boolean";
+  case TEAL_T_INTEGER:
+  case TEAL_T_NUMBER: return "number";
+  case TEAL_T_STRING: return "string";
+  case TEAL_T_FUNCTION: return "function";
+  case TEAL_T_THREAD: return "thread";
+  case TEAL_T_USERDATA: return "userdata";
+  case TEAL_T_RECORD: return "table";
+  default: return NULL;
+  }
+}
+
+static BCReg const_cstr(FuncState *fs, const char *str)
+{
+  GCstr *s = lj_parse_keepstr(fs->ls, str, strlen(str));
+  return const_gc(fs, obj2gco(s), LJ_TSTR);
+}
+
+static void teal_expr_int(ExpDesc *e, int32_t k)
+{
+  expr_init(e, VKNUM, 0);
+  setintV(&e->u.nval, k);
+  e->teal_type = TEAL_T_INTEGER;
+}
+
+static int teal_is_variable_expr(ExpDesc *e)
+{
+  return e->k == VLOCAL || e->k == VUPVAL || e->k == VGLOBAL;
+}
+
+static void teal_emit_bool(ExpDesc *e, int truth)
+{
+  expr_init(e, truth ? VKTRUE : VKFALSE, 0);
+  e->teal_type = TEAL_T_BOOLEAN;
+}
+
+static void teal_emit_nil_test(FuncState *fs, ExpDesc *v, int is_nil)
+{
+  ExpDesc nilv;
+  expr_init(&nilv, VKNIL, 0);
+  nilv.teal_type = TEAL_T_NIL;
+  nilv.teal_nil = 1;
+  bcemit_comp(fs, is_nil ? OPR_EQ : OPR_NE, v, &nilv);
+}
+
+static void teal_emit_lua_type_test(LexState *ls, ExpDesc *v, const char *tname)
+{
+  FuncState *fs = ls->fs;
+  BCReg base = fs->freereg;
+  BCReg arg = base + 1 + ls->fr2;
+  ExpDesc name;
+  bcreg_reserve(fs, 2 + ls->fr2);
+  bcemit_AD(fs, BC_GGET, base, const_cstr(fs, "type"));
+  expr_toreg(fs, v, arg);
+  bcemit_ABC(fs, BC_CALL, base, 2, 2);
+  fs->freereg = base + 1;
+  expr_init(v, VNONRELOC, base);
+  expr_init(&name, VKSTR, 0);
+  name.u.sval = lj_parse_keepstr(ls, tname, strlen(tname));
+  name.teal_type = TEAL_T_STRING;
+  bcemit_comp(fs, OPR_EQ, v, &name);
+}
+
+static void teal_emit_integer_value_test(LexState *ls, ExpDesc *v)
+{
+  FuncState *fs = ls->fs;
+  ExpDesc one, zero;
+  teal_expr_int(&one, 1);
+  teal_expr_int(&zero, 0);
+  bcemit_binop_left(fs, OPR_MOD, v);
+  bcemit_binop(fs, OPR_MOD, v, &one);
+  bcemit_comp(fs, OPR_EQ, v, &zero);
+}
+
+static void teal_emit_is(LexState *ls, ExpDesc *v, TealTypeDesc want)
+{
+  const char *tname;
+  ExpDesc src;
+  if (!teal_is_variable_expr(v))
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL, "can only use 'is' on variables, ", "");
+  if (teal_is_definitely_true(v, want)) {
+    teal_emit_bool(v, 1);
+    return;
+  }
+  if (teal_is_definitely_false(v, want)) {
+    teal_emit_bool(v, 0);
+    return;
+  }
+  if (want.type == TEAL_T_NIL) {
+    teal_emit_nil_test(ls->fs, v, 1);
+  } else if (v->teal_nil && teal_type_matches(v->teal_type, want.type)) {
+    teal_emit_nil_test(ls->fs, v, 0);
+  } else if (want.type == TEAL_T_INTEGER) {
+    src = *v;
+    teal_emit_lua_type_test(ls, v, "number");
+    bcemit_binop_left(ls->fs, OPR_AND, v);
+    teal_emit_integer_value_test(ls, &src);
+    bcemit_binop(ls->fs, OPR_AND, v, &src);
+  } else if ((tname = teal_lua_type_name(want.type)) != NULL) {
+    teal_emit_lua_type_test(ls, v, tname);
+  } else {
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		 "unsupported runtime 'is' type, ", teal_type_name(want.type));
+  }
+  v->teal_type = TEAL_T_BOOLEAN;
+  v->teal_nil = 0;
+}
+
 static void teal_check_assign(LexState *ls, TealTypeDesc want, ExpDesc *e,
 			      const char *what)
 {
@@ -1169,12 +1321,15 @@ static int teal_type_end(LexState *ls)
 {
   switch (ls->tok) {
   case ',': case ')': case '=': case ';':
+  case '+': case '-': case '*': case '/': case '%': case '^':
+  case '<': case '>': case TK_le: case TK_ge: case TK_eq: case TK_ne:
+  case TK_concat: case TK_and: case TK_or:
   case TK_end: case TK_then: case TK_do: case TK_eof:
-  case TK_return: case TK_local: case TK_function: case TK_if:
+  case TK_return: case TK_local: case TK_if:
   case TK_for: case TK_while: case TK_repeat: case TK_break:
     return 1;
   default:
-    return lex_isteal(ls, "as");
+    return lex_isteal(ls, "as") || lex_isteal(ls, "is");
   }
 }
 
@@ -1194,8 +1349,15 @@ static TealTypeDesc teal_parse_type(LexState *ls)
       lj_lex_next(ls);
       if (depth == 0 && ls->tok == TK_name)
 	break;
+    } else if (ls->tok == TK_function) {
+      if (td.type == TEAL_T_UNKNOWN)
+	td.type = TEAL_T_FUNCTION;
+      lj_lex_next(ls);
     } else if (ls->tok == TK_nil) {
-      td.nilok = 1;
+      if (td.type == TEAL_T_UNKNOWN)
+	td.type = TEAL_T_NIL;
+      else
+	td.nilok = 1;
       lj_lex_next(ls);
     } else if (ls->tok == '|') {
       lj_lex_next(ls);
@@ -2207,8 +2369,14 @@ static void expr_simple(LexState *ls, ExpDesc *v)
   case TK_number:
     expr_init(v, (LJ_HASFFI && tviscdata(&ls->tokval)) ? VKCDATA : VKNUM, 0);
     copyTV(ls->L, &v->u.nval, &ls->tokval);
-    v->teal_type = (LJ_DUALNUM && tvisint(&ls->tokval)) ?
-		   TEAL_T_INTEGER : TEAL_T_NUMBER;
+    if (LJ_HASFFI && tviscdata(&ls->tokval)) {
+      v->teal_type = TEAL_T_UNKNOWN;
+    } else if (tvisint(&ls->tokval)) {
+      v->teal_type = TEAL_T_INTEGER;
+    } else {
+      v->teal_type = lj_num2int_ok(numberVnum(&ls->tokval)) ?
+		     TEAL_T_INTEGER : TEAL_T_NUMBER;
+    }
     break;
   case TK_string:
     expr_init(v, VKSTR, 0);
@@ -2262,9 +2430,9 @@ static void synlevel_begin(LexState *ls)
 #define synlevel_end(ls)	((ls)->level--)
 
 /* Convert token to binary operator. */
-static BinOpr token2binop(LexToken tok)
+static BinOpr token2binop(LexState *ls)
 {
-  switch (tok) {
+  switch (ls->tok) {
   case '+':	return OPR_ADD;
   case '-':	return OPR_SUB;
   case '*':	return OPR_MUL;
@@ -2280,7 +2448,7 @@ static BinOpr token2binop(LexToken tok)
   case TK_ge:	return OPR_GE;
   case TK_and:	return OPR_AND;
   case TK_or:	return OPR_OR;
-  default:	return OPR_NOBINOPR;
+  default:	return lex_isteal(ls, "is") ? OPR_IS : OPR_NOBINOPR;
   }
 }
 
@@ -2293,6 +2461,7 @@ static const struct {
   {10,9}, {5,4},			/* POW CONCAT (right associative) */
   {3,3}, {3,3},				/* EQ NE */
   {3,3}, {3,3}, {3,3}, {3,3},		/* LT GE GT LE */
+  {3,3},				/* IS */
   {2,2}, {1,1}				/* AND OR */
 };
 
@@ -2335,15 +2504,21 @@ static BinOpr expr_binop(LexState *ls, ExpDesc *v, uint32_t limit)
   BinOpr op;
   synlevel_begin(ls);
   expr_unop(ls, v);
-  op = token2binop(ls->tok);
+  op = token2binop(ls);
   while (op != OPR_NOBINOPR && priority[op].left > limit) {
     ExpDesc v2;
     BinOpr nextop;
     lj_lex_next(ls);
-    bcemit_binop_left(ls->fs, op, v);
-    /* Parse binary expression with higher priority. */
-    nextop = expr_binop(ls, &v2, priority[op].right);
-    bcemit_binop(ls->fs, op, v, &v2);
+    if (op == OPR_IS) {
+      TealTypeDesc want = teal_parse_type(ls);
+      teal_emit_is(ls, v, want);
+      nextop = token2binop(ls);
+    } else {
+      bcemit_binop_left(ls->fs, op, v);
+      /* Parse binary expression with higher priority. */
+      nextop = expr_binop(ls, &v2, priority[op].right);
+      bcemit_binop(ls->fs, op, v, &v2);
+    }
     op = nextop;
   }
   synlevel_end(ls);

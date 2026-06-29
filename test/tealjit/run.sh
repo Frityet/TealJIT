@@ -13,9 +13,16 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 
 "$LUAJIT" strict_off_nil.tl
 "$LUAJIT" -t strict=off strict_cli_off.tl
+"$LUAJIT" is_primitive.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   echo "as_bad.tl unexpectedly passed" >&2
   exit 1
 fi
 grep -q "invalid strict cast" /tmp/tealjit-as-bad.out
+
+if "$LUAJIT" is_name_only_bad.tl >/tmp/tealjit-is-name-only.out 2>&1; then
+  echo "is_name_only_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "can only use 'is' on variables" /tmp/tealjit-is-name-only.out
