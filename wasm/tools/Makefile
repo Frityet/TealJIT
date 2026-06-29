@@ -51,6 +51,7 @@ trace-ir-module-check: wasm_trace_ir_module
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i32.load'
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'f64.load'
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i64.load'
+	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i64.and'
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i64.shr_u'
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i64.eq'
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i64.lt_u'

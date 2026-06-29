@@ -87,6 +87,7 @@ typedef enum LJWasmOpcode {
   LJ_WASM_OP_I32_SUB = 0x6b,
   LJ_WASM_OP_I32_MUL = 0x6c,
   LJ_WASM_OP_I64_ADD = 0x7c,
+  LJ_WASM_OP_I64_AND = 0x83,
   LJ_WASM_OP_I64_SHR_U = 0x88,
   LJ_WASM_OP_F64_ADD = 0xa0,
   LJ_WASM_OP_F64_SUB = 0xa1,
