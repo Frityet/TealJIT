@@ -9,11 +9,12 @@ WASM64_CFLAGS ?= -sMEMORY64=1 -std=c99 -Wall -Wextra -Werror -I$(SRC)
 LDLIBS ?= -lm -ldl
 OUT ?= /tmp/lj-wasm-nyi-trace.wasm
 OUT_IR ?= /tmp/lj-wasm-ir-trace.wasm
+OUT_FALLBACK ?= /tmp/lj-wasm-fallback-trace.wasm
 WASM64_CHECK_DIR ?= /tmp/lj-wasm64-support-check
 WASM64_SKIP_SRC :=
 WASM64_CORE_SRC := $(filter-out $(WASM64_SKIP_SRC),$(notdir $(wildcard $(SRC)/*.c)))
 
-.PHONY: check trace-module-check trace-ir-module-check trace-enter-contract-check wasm64-support-check clean
+.PHONY: check trace-module-check trace-ir-module-check trace-fallback-module-check trace-enter-contract-check wasm64-support-check clean
 
 wasm_nyi_trace_module: wasm_nyi_trace_module.c $(SRC)/libluajit.a
 	$(CC) $(CFLAGS) -o $@ wasm_nyi_trace_module.c $(SRC)/libluajit.a $(LDLIBS)
@@ -21,10 +22,13 @@ wasm_nyi_trace_module: wasm_nyi_trace_module.c $(SRC)/libluajit.a
 wasm_trace_ir_module: wasm_trace_ir_module.c $(SRC)/libluajit.a
 	$(CC) $(CFLAGS) -o $@ wasm_trace_ir_module.c $(SRC)/libluajit.a $(LDLIBS)
 
+wasm_trace_fallback_module: wasm_trace_fallback_module.c $(SRC)/libluajit.a
+	$(CC) $(CFLAGS) -o $@ wasm_trace_fallback_module.c $(SRC)/libluajit.a $(LDLIBS)
+
 wasm_trace_enter_contract: wasm_trace_enter_contract.c $(SRC)/libluajit.a
 	$(CC) $(CFLAGS) -o $@ wasm_trace_enter_contract.c $(SRC)/libluajit.a $(LDLIBS)
 
-check: trace-module-check trace-ir-module-check trace-enter-contract-check wasm64-support-check
+check: trace-module-check trace-ir-module-check trace-fallback-module-check trace-enter-contract-check wasm64-support-check
 
 trace-module-check: wasm_nyi_trace_module
 	./wasm_nyi_trace_module > $(OUT)
@@ -38,6 +42,12 @@ trace-ir-module-check: wasm_trace_ir_module
 	$(LLVM_OBJDUMP) -h $(OUT_IR) >/dev/null
 	$(WASM_VALIDATE) $(OUT_IR)
 
+trace-fallback-module-check: wasm_trace_fallback_module
+	./wasm_trace_fallback_module > $(OUT_FALLBACK)
+	test `wc -c < $(OUT_FALLBACK)` -gt 8
+	$(LLVM_OBJDUMP) -h $(OUT_FALLBACK) >/dev/null
+	$(WASM_VALIDATE) $(OUT_FALLBACK)
+
 trace-enter-contract-check: wasm_trace_enter_contract
 	./wasm_trace_enter_contract
 
@@ -50,4 +60,4 @@ wasm64-support-check:
 	done
 
 clean:
-	rm -f wasm_nyi_trace_module wasm_trace_ir_module wasm_trace_enter_contract
+	rm -f wasm_nyi_trace_module wasm_trace_ir_module wasm_trace_fallback_module wasm_trace_enter_contract
