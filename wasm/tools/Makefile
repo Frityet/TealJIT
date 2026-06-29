@@ -1,6 +1,7 @@
 CC ?= cc
 EMCC ?= emcc
 LLVM_OBJDUMP ?= llvm-objdump
+WASM_OBJDUMP ?= wasm-objdump
 WASM_VALIDATE ?= wasm-validate
 WASM_VALIDATE_FLAGS ?= --enable-memory64
 ROOT := ../..
@@ -42,6 +43,9 @@ trace-ir-module-check: wasm_trace_ir_module
 	test `wc -c < $(OUT_IR)` -gt 8
 	$(LLVM_OBJDUMP) -h $(OUT_IR) >/dev/null
 	$(WASM_VALIDATE) $(WASM_VALIDATE_FLAGS) $(OUT_IR)
+	$(WASM_OBJDUMP) -x $(OUT_IR) | grep -q 'i64 <- env.memory'
+	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i32.load'
+	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'f64.load'
 
 trace-fallback-module-check: wasm_trace_fallback_module
 	./wasm_trace_fallback_module > $(OUT_FALLBACK)
