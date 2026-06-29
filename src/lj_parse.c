@@ -112,7 +112,8 @@ typedef enum TealType {
   TEAL_T_THREAD,
   TEAL_T_USERDATA,
   TEAL_T_RECORD,
-  TEAL_T_TABLE
+  TEAL_T_TABLE,
+  TEAL_T_UNION
 } TealType;
 
 typedef struct TealTypeDesc {
@@ -130,6 +131,8 @@ typedef struct TealTypeDesc {
 #define TEAL_MAX_GLOBALS	512
 #define TEAL_MAX_TABLE_TYPES	512
 #define TEAL_MAX_TABLE_ENTRIES	1024
+#define TEAL_MAX_UNION_TYPES	512
+#define TEAL_MAX_UNION_PARTS	1024
 
 #define TEAL_ITER_NONE		0
 #define TEAL_ITER_IPAIRS	1
@@ -163,6 +166,11 @@ typedef struct TealTableType {
   uint8_t literal;
   uint8_t open;
 } TealTableType;
+
+typedef struct TealUnionType {
+  uint16_t first;
+  uint16_t count;
+} TealUnionType;
 
 typedef struct TealRecordShape {
   BCReg reg;
@@ -303,6 +311,8 @@ struct FuncState {
   FuncState *teal_sig_ptabfs[TEAL_MAX_FUNC_PARAMS];
   TealTableType teal_tables[TEAL_MAX_TABLE_TYPES];
   TealTableEntry teal_table_entries[TEAL_MAX_TABLE_ENTRIES];
+  TealUnionType teal_unions[TEAL_MAX_UNION_TYPES];
+  TealTypeDesc teal_union_parts[TEAL_MAX_UNION_PARTS];
   GCstr *teal_alias_name[TEAL_MAX_TYPE_ALIASES];
   TealTypeDesc teal_alias_type[TEAL_MAX_TYPE_ALIASES];
   GCstr *teal_global_name[TEAL_MAX_GLOBALS];
@@ -314,6 +324,8 @@ struct FuncState {
   uint16_t teal_ntable;
   uint16_t teal_ntableentry;
   uint16_t teal_ntableowner;
+  uint16_t teal_nunion;
+  uint16_t teal_nunionpart;
   uint16_t teal_nalias;
   uint16_t teal_nglobal;
   uint8_t teal_paramtype[LJ_MAX_LOCVAR];
@@ -1401,16 +1413,22 @@ static const char *teal_type_name(uint8_t t)
   case TEAL_T_USERDATA: return "userdata";
   case TEAL_T_RECORD: return "record";
   case TEAL_T_TABLE: return "table";
+  case TEAL_T_UNION: return "union";
   default: return "unknown";
   }
 }
 
 static TealFuncSig *teal_func_sig(FuncState *fs, uint16_t id);
 static TealTableType *teal_table_type(FuncState *fs, uint16_t id);
+static TealUnionType *teal_union_type(FuncState *fs, uint16_t id);
 static int teal_type_matches(uint8_t got, uint8_t want);
 static int teal_func_sig_assignable(FuncState *wantfs, uint16_t wantid,
 				    FuncState *gotfs, uint16_t gotid);
 static int teal_type_desc_assignable(TealTypeDesc want, TealTypeDesc got);
+static void teal_type_merge(LexState *ls, TealTypeDesc *td,
+			    TealTypeDesc part);
+static void teal_type_merge_unchecked(LexState *ls, TealTypeDesc *td,
+				      TealTypeDesc part);
 
 static TealTypeDesc teal_type_from_expr(FuncState *fs, ExpDesc *e)
 {
@@ -1589,30 +1607,57 @@ static TealTypeDesc *teal_tuple_entry(TealTableType *tt, FuncState *fs,
   return NULL;
 }
 
-static int teal_tuple_homogeneous_val(TealTableType *tt, FuncState *fs,
-				      TealTypeDesc *val)
+static int teal_union_runtime_kind(TealTypeDesc t)
 {
-  TealTypeDesc first;
+  if (t.type == TEAL_T_TABLE || t.type == TEAL_T_RECORD)
+    return 1;
+  if (t.type == TEAL_T_FUNCTION)
+    return 2;
+  if (t.type == TEAL_T_USERDATA)
+    return 3;
+  return 0;
+}
+
+static int teal_union_runtime_valid(TealTypeDesc *parts, uint16_t npart)
+{
+  uint8_t seen_table = 0, seen_func = 0, seen_userdata = 0;
+  uint16_t i;
+  for (i = 0; i < npart; i++) {
+    switch (teal_union_runtime_kind(parts[i])) {
+    case 1:
+      if (seen_table) return 0;
+      seen_table = 1;
+      break;
+    case 2:
+      if (seen_func) return 0;
+      seen_func = 1;
+      break;
+    case 3:
+      if (seen_userdata) return 0;
+      seen_userdata = 1;
+      break;
+    default:
+      break;
+    }
+  }
+  return 1;
+}
+
+static int teal_tuple_union_val(LexState *ls, TealTableType *tt, FuncState *fs,
+				TealTypeDesc *val)
+{
   uint16_t i, seen = 0;
-  teal_type_unknown(&first);
+  teal_type_unknown(val);
   if (tt == NULL || fs == NULL || !tt->tuple || tt->owner == 0)
     return 0;
   for (i = 0; i < fs->teal_ntableentry; i++) {
     TealTableEntry *ent = &fs->teal_table_entries[i];
     if (ent->owner != tt->owner)
       continue;
-    if (seen == 0) {
-      first = ent->val;
-    } else if (!teal_type_desc_assignable(first, ent->val) ||
-	       !teal_type_desc_assignable(ent->val, first)) {
-      return 0;
-    }
+    teal_type_merge(ls, val, ent->val);
     seen++;
   }
-  if (seen == 0 || seen != tt->count)
-    return 0;
-  *val = first;
-  return 1;
+  return seen != 0 && seen == tt->count;
 }
 
 static uint16_t teal_integer_key(ExpDesc *e)
@@ -1689,15 +1734,60 @@ static int teal_func_sig_assignable(FuncState *wantfs, uint16_t wantid,
   }
 }
 
+static int teal_union_accepts(TealTypeDesc want, TealTypeDesc got)
+{
+  TealUnionType *wu = teal_union_type(want.tabfs, want.tab);
+  uint16_t i;
+  if (wu == NULL)
+    return 1;
+  if (got.type == TEAL_T_UNION) {
+    TealUnionType *gu = teal_union_type(got.tabfs, got.tab);
+    if (gu == NULL)
+      return 1;
+    for (i = 0; i < gu->count; i++) {
+      TealTypeDesc part = got.tabfs->teal_union_parts[gu->first+i];
+      if (!teal_union_accepts(want, part))
+	return 0;
+    }
+    return 1;
+  }
+  for (i = 0; i < wu->count; i++) {
+    TealTypeDesc part = want.tabfs->teal_union_parts[wu->first+i];
+    if (teal_type_desc_assignable(part, got))
+      return 1;
+  }
+  return 0;
+}
+
+static int teal_union_assignable_to(TealTypeDesc want, TealTypeDesc got)
+{
+  TealUnionType *gu = teal_union_type(got.tabfs, got.tab);
+  uint16_t i;
+  if (gu == NULL)
+    return 1;
+  for (i = 0; i < gu->count; i++) {
+    TealTypeDesc part = got.tabfs->teal_union_parts[gu->first+i];
+    if (!teal_type_desc_assignable(want, part))
+      return 0;
+  }
+  return 1;
+}
+
 static int teal_type_desc_assignable(TealTypeDesc want, TealTypeDesc got)
 {
   if (want.type == TEAL_T_UNKNOWN || want.type == TEAL_T_ANY ||
-      got.type == TEAL_T_UNKNOWN || got.type == TEAL_T_ANY)
+      got.type == TEAL_T_UNKNOWN)
     return 1;
+  if (got.type == TEAL_T_ANY)
+    return want.type != TEAL_T_UNION;
   if (got.type == TEAL_T_NIL)
     return want.nilok || want.type == TEAL_T_NIL;
   if (got.nilok && !want.nilok)
     return 0;
+  if (want.type == TEAL_T_UNION)
+    return teal_union_accepts(want, got);
+  if (got.type == TEAL_T_UNION)
+    return teal_union_assignable_to(want, got);
   if (want.type != got.type &&
       !(want.type == TEAL_T_NUMBER && got.type == TEAL_T_INTEGER))
     return 0;
@@ -1930,7 +2020,15 @@ static TealTableType *teal_table_type(FuncState *fs, uint16_t id)
 	 &fs->teal_tables[id-1] : NULL;
 }
 
+static TealUnionType *teal_union_type(FuncState *fs, uint16_t id)
+{
+  return fs != NULL && id != 0 && id <= fs->teal_nunion ?
+	 &fs->teal_unions[id-1] : NULL;
+}
+
 static uint16_t teal_table_type_clone(LexState *ls, FuncState *dstfs,
+				      TealTypeDesc *t);
+static uint16_t teal_union_type_clone(LexState *ls, FuncState *dstfs,
 				      TealTypeDesc *t);
 
 static TealTypeDesc teal_type_clone(LexState *ls, FuncState *dstfs,
@@ -1938,6 +2036,8 @@ static TealTypeDesc teal_type_clone(LexState *ls, FuncState *dstfs,
 {
   if (t.type == TEAL_T_TABLE && t.tab != 0)
     t.tab = teal_table_type_clone(ls, dstfs, &t);
+  else if (t.type == TEAL_T_UNION && t.tab != 0)
+    t.tab = teal_union_type_clone(ls, dstfs, &t);
   return t;
 }
 
@@ -1974,6 +2074,47 @@ static uint16_t teal_table_type_clone(LexState *ls, FuncState *dstfs,
   t->tabfs = dstfs;
   return teal_table_type_new(ls, dstfs, key, val, 0, 0, 0, 0, 0,
 			     src->open);
+}
+
+static uint16_t teal_union_type_new(LexState *ls, FuncState *fs,
+				    uint16_t first, uint16_t count)
+{
+  TealUnionType *tu;
+  if (fs->teal_nunion >= TEAL_MAX_UNION_TYPES)
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many union types, ", "");
+  tu = &fs->teal_unions[fs->teal_nunion];
+  tu->first = first;
+  tu->count = count;
+  fs->teal_nunion++;
+  return fs->teal_nunion;
+}
+
+static uint16_t teal_union_part_add(LexState *ls, FuncState *fs,
+				    TealTypeDesc part)
+{
+  if (fs->teal_nunionpart >= TEAL_MAX_UNION_PARTS)
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many union parts, ", "");
+  fs->teal_union_parts[fs->teal_nunionpart] = part;
+  fs->teal_nunionpart++;
+  return fs->teal_nunionpart;
+}
+
+static uint16_t teal_union_type_clone(LexState *ls, FuncState *dstfs,
+				      TealTypeDesc *t)
+{
+  FuncState *srcfs = t->tabfs;
+  TealUnionType *src = teal_union_type(srcfs, t->tab);
+  uint16_t first = dstfs->teal_nunionpart;
+  uint16_t i;
+  if (src == NULL)
+    return 0;
+  for (i = 0; i < src->count; i++) {
+    TealTypeDesc part = teal_type_clone(ls, dstfs,
+					srcfs->teal_union_parts[src->first+i]);
+    (void)teal_union_part_add(ls, dstfs, part);
+  }
+  t->tabfs = dstfs;
+  return teal_union_type_new(ls, dstfs, first, src->count);
 }
 
 static uint16_t teal_func_sig_new(LexState *ls, FuncState *pfs, FuncState *cfs)
@@ -2390,7 +2531,7 @@ static void teal_check_table_index_read(FuncState *fs, ExpDesc *e)
 	  !teal_type_desc_assignable(intkey, key))
 	lj_lex_error(ls, 0, LJ_ERR_XTEAL,
 		     "tuple key type mismatch, ", teal_type_name(intkey.type));
-      if (teal_tuple_homogeneous_val(tt, tabfs, &val)) {
+      if (teal_tuple_union_val(ls, tt, tabfs, &val)) {
 	teal_expr_set_type(e, val);
 	return;
       }
@@ -2440,7 +2581,7 @@ static void teal_check_table_index_store(FuncState *fs, ExpDesc *var,
 	  !teal_type_desc_assignable(intkey, key))
 	lj_lex_error(ls, 0, LJ_ERR_XTEAL,
 		     "tuple key type mismatch, ", teal_type_name(intkey.type));
-      if (teal_tuple_homogeneous_val(tt, tabfs, &slotval)) {
+      if (teal_tuple_union_val(ls, tt, tabfs, &slotval)) {
 	teal_check_assign(ls, slotval, e, "tuple value type mismatch, ");
 	return;
       }
@@ -2484,21 +2625,83 @@ static int teal_type_end(LexState *ls)
 
 static TealTypeDesc teal_parse_type(LexState *ls);
 
-static void teal_type_merge(TealTypeDesc *td, TealTypeDesc part)
+static void teal_union_collect_part(LexState *ls, TealTypeDesc *parts,
+				    uint16_t *npart, uint8_t *nilok,
+				    TealTypeDesc part)
 {
+  uint16_t i;
   if (part.type == TEAL_T_UNKNOWN)
     return;
-  if (td->type == TEAL_T_UNKNOWN) {
-    *td = part;
-  } else if (td->type == TEAL_T_NIL && part.type != TEAL_T_NIL) {
-    uint8_t nilok = td->nilok || 1;
-    *td = part;
-    td->nilok = nilok;
-  } else if (part.type == TEAL_T_NIL) {
-    td->nilok = 1;
-  } else if (part.nilok) {
-    td->nilok = 1;
+  if (part.type == TEAL_T_NIL) {
+    *nilok = 1;
+    return;
   }
+  if (part.nilok) {
+    *nilok = 1;
+    part.nilok = 0;
+  }
+  if (part.type == TEAL_T_UNION) {
+    TealUnionType *tu = teal_union_type(part.tabfs, part.tab);
+    if (tu == NULL)
+      return;
+    for (i = 0; i < tu->count; i++)
+      teal_union_collect_part(ls, parts, npart, nilok,
+			      part.tabfs->teal_union_parts[tu->first+i]);
+    return;
+  }
+  for (i = 0; i < *npart; i++) {
+    if (teal_type_desc_assignable(parts[i], part))
+      return;
+    if (teal_type_desc_assignable(part, parts[i])) {
+      parts[i] = part;
+      return;
+    }
+  }
+  if (*npart >= TEAL_MAX_UNION_PARTS)
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL, "too many union parts, ", "");
+  parts[(*npart)++] = part;
+}
+
+static void teal_type_merge_(LexState *ls, TealTypeDesc *td,
+			     TealTypeDesc part, int validate)
+{
+  TealTypeDesc parts[TEAL_MAX_UNION_PARTS];
+  uint16_t first, i, npart = 0;
+  uint8_t nilok = 0;
+  teal_union_collect_part(ls, parts, &npart, &nilok, *td);
+  teal_union_collect_part(ls, parts, &npart, &nilok, part);
+  if (npart == 0) {
+    teal_type_unknown(td);
+    if (nilok) {
+      td->type = TEAL_T_NIL;
+      td->nilok = 1;
+    }
+  } else if (npart == 1) {
+    *td = parts[0];
+    td->nilok |= nilok;
+  } else {
+    if (validate && !teal_union_runtime_valid(parts, npart))
+      lj_lex_error(ls, 0, LJ_ERR_XTEAL, "invalid union type, ", "");
+    first = ls->fs->teal_nunionpart;
+    for (i = 0; i < npart; i++)
+      (void)teal_union_part_add(ls, ls->fs, parts[i]);
+    teal_type_unknown(td);
+    td->type = TEAL_T_UNION;
+    td->nilok = nilok;
+    td->tab = teal_union_type_new(ls, ls->fs, first, npart);
+    td->tabfs = ls->fs;
+  }
+}
+
+static void teal_type_merge(LexState *ls, TealTypeDesc *td, TealTypeDesc part)
+{
+  teal_type_merge_(ls, td, part, 1);
+}
+
+static void teal_type_merge_unchecked(LexState *ls, TealTypeDesc *td,
+				      TealTypeDesc part)
+{
+  teal_type_merge_(ls, td, part, 0);
 }
 
 static TealTypeDesc teal_parse_type_tail(LexState *ls, TealTypeDesc td);
@@ -2630,7 +2833,7 @@ static TealTypeDesc teal_parse_table_type(LexState *ls)
 	    (teal_table_entry_add(ls, fs, 0, (uint16_t)(nentry+1),
 				  key, part)-1);
 	  nentry++;
-	  teal_type_merge(&val, part);
+	  teal_type_merge_unchecked(ls, &val, part);
 	}
       }
     }
@@ -2663,16 +2866,16 @@ static TealTypeDesc teal_parse_type_tail(LexState *ls, TealTypeDesc td)
     if (ls->tok == TK_name || (!LJ_52 && ls->tok == TK_goto)) {
       TealTypeDesc part;
       teal_type_from_name(ls, &part, strV(&ls->tokval));
-      teal_type_merge(&td, part);
+      teal_type_merge(ls, &td, part);
       lj_lex_next(ls);
       if (depth == 0 && ls->tok == TK_name)
 	break;
     } else if (ls->tok == TK_function) {
       TealTypeDesc part = teal_parse_function_type(ls);
-      teal_type_merge(&td, part);
+      teal_type_merge(ls, &td, part);
     } else if (ls->tok == '{') {
       TealTypeDesc part = teal_parse_table_type(ls);
-      teal_type_merge(&td, part);
+      teal_type_merge(ls, &td, part);
     } else if (ls->tok == TK_nil) {
       if (td.type == TEAL_T_UNKNOWN)
 	td.type = TEAL_T_NIL;
@@ -3350,6 +3553,8 @@ static void fs_init(LexState *ls, FuncState *fs)
   memset(fs->teal_sig_ptabfs, 0, sizeof(fs->teal_sig_ptabfs));
   memset(fs->teal_tables, 0, sizeof(fs->teal_tables));
   memset(fs->teal_table_entries, 0, sizeof(fs->teal_table_entries));
+  memset(fs->teal_unions, 0, sizeof(fs->teal_unions));
+  memset(fs->teal_union_parts, 0, sizeof(fs->teal_union_parts));
   memset(fs->teal_alias_name, 0, sizeof(fs->teal_alias_name));
   memset(fs->teal_alias_type, 0, sizeof(fs->teal_alias_type));
   memset(fs->teal_global_name, 0, sizeof(fs->teal_global_name));
@@ -3366,6 +3571,8 @@ static void fs_init(LexState *ls, FuncState *fs)
   fs->teal_ntable = 0;
   fs->teal_ntableentry = 0;
   fs->teal_ntableowner = 0;
+  fs->teal_nunion = 0;
+  fs->teal_nunionpart = 0;
   fs->teal_nalias = 0;
   fs->teal_nglobal = 0;
   fs->teal_nparam = 0;
@@ -3587,8 +3794,8 @@ static void expr_table(LexState *ls, ExpDesc *e)
       uint16_t ikey = teal_integer_key(&key);
       (void)teal_table_entry_add(ls, fs, table_owner, ikey, kt, vt);
       table_count++;
-      teal_type_merge(&table_key, kt);
-      teal_type_merge(&table_val, vt);
+      teal_type_merge_unchecked(ls, &table_key, kt);
+      teal_type_merge_unchecked(ls, &table_val, vt);
     }
     if (expr_isk(&key) && key.k != VKNIL &&
 	(key.k == VKSTR || expr_isk_nojump(&val))) {

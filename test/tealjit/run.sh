@@ -26,6 +26,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" for_iterators.tl
 "$LUAJIT" for_next_iterators.tl
 "$LUAJIT" tuple_types.tl
+"$LUAJIT" union_types.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   echo "as_bad.tl unexpectedly passed" >&2
@@ -332,6 +333,42 @@ if "$LUAJIT" tuple_write_oob_bad.tl >/tmp/tealjit-tuple-write-oob.out 2>&1; then
   exit 1
 fi
 grep -q "tuple index out of range" /tmp/tealjit-tuple-write-oob.out
+
+if "$LUAJIT" union_value_bad.tl >/tmp/tealjit-union-value.out 2>&1; then
+  echo "union_value_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-union-value.out
+
+if "$LUAJIT" union_narrow_bad.tl >/tmp/tealjit-union-narrow.out 2>&1; then
+  echo "union_narrow_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-union-narrow.out
+
+if "$LUAJIT" union_any_bad.tl >/tmp/tealjit-union-any.out 2>&1; then
+  echo "union_any_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-union-any.out
+
+if "$LUAJIT" union_strict_nil_bad.tl >/tmp/tealjit-union-nil.out 2>&1; then
+  echo "union_strict_nil_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "strict nil safety" /tmp/tealjit-union-nil.out
+
+if "$LUAJIT" union_invalid_table_bad.tl >/tmp/tealjit-union-invalid-table.out 2>&1; then
+  echo "union_invalid_table_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "invalid union type" /tmp/tealjit-union-invalid-table.out
+
+if "$LUAJIT" tuple_variable_invalid_union_bad.tl >/tmp/tealjit-tuple-variable-invalid-union.out 2>&1; then
+  echo "tuple_variable_invalid_union_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "invalid union type" /tmp/tealjit-tuple-variable-invalid-union.out
 
 if "$LUAJIT" record_method_colon_arg_bad.tl >/tmp/tealjit-method-arg.out 2>&1; then
   echo "record_method_colon_arg_bad.tl unexpectedly passed" >&2
