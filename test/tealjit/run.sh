@@ -42,6 +42,12 @@ if "$LUAJIT" is_name_only_bad.tl >/tmp/tealjit-is-name-only.out 2>&1; then
 fi
 grep -q "can only use 'is' on variables" /tmp/tealjit-is-name-only.out
 
+if "$LUAJIT" is_narrow_restore_bad.tl >/tmp/tealjit-is-narrow-restore.out 2>&1; then
+  echo "is_narrow_restore_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-is-narrow-restore.out
+
 if "$LUAJIT" record_field_unknown_read_bad.tl >/tmp/tealjit-record-read.out 2>&1; then
   echo "record_field_unknown_read_bad.tl unexpectedly passed" >&2
   exit 1

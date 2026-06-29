@@ -85,6 +85,14 @@ typedef struct ExpDesc {
   uint16_t teal_index_keytab;  /* Static table key type for table indexing. */
   FuncState *teal_index_keytabfs;  /* Owner of teal_index_keytab. */
   uint16_t teal_index_ikey;  /* Positive integer key, if statically known. */
+  uint8_t teal_narrow;	/* Condition narrows a local in the true branch. */
+  uint16_t teal_narrow_reg;
+  uint8_t teal_narrow_type;
+  uint8_t teal_narrow_nil;
+  uint16_t teal_narrow_sig;
+  FuncState *teal_narrow_sigfs;
+  uint16_t teal_narrow_tab;
+  FuncState *teal_narrow_tabfs;
   uint8_t teal_iter;	/* Builtin iterator result metadata kind. */
   uint8_t teal_iter_ktype;
   uint8_t teal_iter_knil;
@@ -215,6 +223,14 @@ static LJ_AINLINE void expr_init(ExpDesc *e, ExpKind k, uint32_t info)
   e->teal_index_keytab = 0;
   e->teal_index_keytabfs = NULL;
   e->teal_index_ikey = 0;
+  e->teal_narrow = 0;
+  e->teal_narrow_reg = 0;
+  e->teal_narrow_type = TEAL_T_UNKNOWN;
+  e->teal_narrow_nil = 0;
+  e->teal_narrow_sig = 0;
+  e->teal_narrow_sigfs = NULL;
+  e->teal_narrow_tab = 0;
+  e->teal_narrow_tabfs = NULL;
   e->teal_iter = TEAL_ITER_NONE;
   e->teal_iter_ktype = TEAL_T_UNKNOWN;
   e->teal_iter_knil = 0;
@@ -1454,6 +1470,20 @@ static void teal_expr_set_type(ExpDesc *e, TealTypeDesc t)
   e->teal_tabfs = t.tabfs;
 }
 
+static void teal_expr_set_narrow(ExpDesc *e, ExpDesc *src, TealTypeDesc t)
+{
+  if (src->k != VLOCAL)
+    return;
+  e->teal_narrow = 1;
+  e->teal_narrow_reg = (uint16_t)src->u.s.info;
+  e->teal_narrow_type = t.type;
+  e->teal_narrow_nil = t.nilok;
+  e->teal_narrow_sig = t.sig;
+  e->teal_narrow_sigfs = t.sigfs;
+  e->teal_narrow_tab = t.tab;
+  e->teal_narrow_tabfs = t.tabfs;
+}
+
 static void teal_iter_set(ExpDesc *e, uint8_t kind, TealTypeDesc key,
 			  TealTypeDesc val)
 {
@@ -1996,16 +2026,20 @@ static void teal_emit_union_is(LexState *ls, ExpDesc *v, TealTypeDesc want)
   }
   v->teal_type = TEAL_T_BOOLEAN;
   v->teal_nil = 0;
+  teal_expr_set_narrow(v, &src, want);
 }
 
 static void teal_emit_is(LexState *ls, ExpDesc *v, TealTypeDesc want)
 {
   const char *tname;
   ExpDesc src;
+  ExpDesc narrow_src;
   if (!teal_is_variable_expr(v))
     lj_lex_error(ls, 0, LJ_ERR_XTEAL, "can only use 'is' on variables, ", "");
+  narrow_src = *v;
   if (teal_is_definitely_true(v, want)) {
     teal_emit_bool(v, 1);
+    teal_expr_set_narrow(v, &narrow_src, want);
     return;
   }
   if (teal_is_definitely_false(v, want)) {
@@ -2033,6 +2067,7 @@ static void teal_emit_is(LexState *ls, ExpDesc *v, TealTypeDesc want)
   }
   v->teal_type = TEAL_T_BOOLEAN;
   v->teal_nil = 0;
+  teal_expr_set_narrow(v, &narrow_src, want);
 }
 
 static TealRecordShape *teal_record_shape(FuncState *fs, uint16_t id);
@@ -4426,11 +4461,13 @@ static void expr_next(LexState *ls)
 }
 
 /* Parse conditional expression. */
-static BCPos expr_cond(LexState *ls)
+static BCPos expr_cond(LexState *ls, ExpDesc *cond)
 {
   ExpDesc v;
   expr(ls, &v);
   if (v.k == VKNIL) v.k = VKFALSE;
+  if (cond != NULL)
+    *cond = v;
   bcemit_branch_t(ls->fs, &v);
   return v.f;
 }
@@ -5000,7 +5037,7 @@ static void parse_while(LexState *ls, BCLine line)
   FuncScope bl;
   lj_lex_next(ls);  /* Skip 'while'. */
   start = fs->lasttarget = fs->pc;
-  condexit = expr_cond(ls);
+  condexit = expr_cond(ls, NULL);
   fscope_begin(fs, &bl, FSCOPE_LOOP);
   lex_check(ls, TK_do);
   loop = bcemit_AD(fs, BC_LOOP, fs->nactvar, 0);
@@ -5025,7 +5062,7 @@ static void parse_repeat(LexState *ls, BCLine line)
   bcemit_AD(fs, BC_LOOP, fs->nactvar, 0);
   parse_chunk(ls);
   lex_match(ls, TK_until, TK_repeat, line);
-  condexit = expr_cond(ls);  /* Parse condition (still inside inner scope). */
+  condexit = expr_cond(ls, NULL);  /* Parse condition (still inside inner scope). */
   if (!(bl2.flags & FSCOPE_UPVAL)) {  /* No upvalues? Just end inner scope. */
     fscope_end(fs);
   } else {  /* Otherwise generate: cond: UCLO+JMP out, !cond: UCLO+JMP loop. */
@@ -5189,14 +5226,67 @@ static void parse_for(LexState *ls, BCLine line)
   fscope_end(fs);  /* Resolve break list. */
 }
 
+static int teal_apply_true_narrow(FuncState *fs, ExpDesc *cond,
+				  TealTypeDesc *old,
+				  uint16_t *oldshape,
+				  FuncState **oldshapefs)
+{
+  TealTypeDesc t;
+  BCReg reg;
+  if (!fs->ls->teal || !cond->teal_narrow)
+    return 0;
+  reg = (BCReg)cond->teal_narrow_reg;
+  if (reg >= fs->nactvar)
+    return 0;
+  teal_type_unknown(old);
+  old->type = fs->teal_vtype[reg];
+  old->nilok = fs->teal_vnil[reg];
+  old->sig = fs->teal_vsig[reg];
+  old->sigfs = fs->teal_vsigfs[reg];
+  old->tab = fs->teal_vtab[reg];
+  old->tabfs = fs->teal_vtabfs[reg];
+  *oldshape = fs->teal_vshape[reg];
+  *oldshapefs = fs->teal_vshapefs[reg];
+  teal_type_unknown(&t);
+  t.type = cond->teal_narrow_type;
+  t.nilok = cond->teal_narrow_nil;
+  t.sig = cond->teal_narrow_sig;
+  t.sigfs = cond->teal_narrow_sigfs;
+  t.tab = cond->teal_narrow_tab;
+  t.tabfs = cond->teal_narrow_tabfs;
+  teal_set_local_type(fs, reg, t);
+  fs->teal_vshape[reg] = 0;
+  fs->teal_vshapefs[reg] = NULL;
+  return 1;
+}
+
+static void teal_restore_true_narrow(FuncState *fs, ExpDesc *cond,
+				     TealTypeDesc old, uint16_t oldshape,
+				     FuncState *oldshapefs)
+{
+  BCReg reg = (BCReg)cond->teal_narrow_reg;
+  teal_set_local_type(fs, reg, old);
+  fs->teal_vshape[reg] = oldshape;
+  fs->teal_vshapefs[reg] = oldshapefs;
+}
+
 /* Parse condition and 'then' block. */
 static BCPos parse_then(LexState *ls)
 {
+  FuncState *fs = ls->fs;
+  ExpDesc cond;
+  TealTypeDesc old;
+  uint16_t oldshape = 0;
+  FuncState *oldshapefs = NULL;
   BCPos condexit;
+  int narrowed;
   lj_lex_next(ls);  /* Skip 'if' or 'elseif'. */
-  condexit = expr_cond(ls);
+  condexit = expr_cond(ls, &cond);
   lex_check(ls, TK_then);
+  narrowed = teal_apply_true_narrow(fs, &cond, &old, &oldshape, &oldshapefs);
   parse_block(ls);
+  if (narrowed)
+    teal_restore_true_narrow(fs, &cond, old, oldshape, oldshapefs);
   return condexit;
 }
 
