@@ -37,9 +37,18 @@ static void setguard(GCtrace *T, IRRef ref, IROp op, IRType type,
   ir->prev = 0;
 }
 
+static void setknull(GCtrace *T, IRRef ref)
+{
+  IRIns *ir = &T->ir[ref];
+  ir->ot = IRT(IR_KNULL, IRT_P64);
+  ir->op1 = 0;
+  ir->op2 = 0;
+  ir->prev = 0;
+}
+
 int main(void)
 {
-  enum { NIR = 20 };
+  enum { NIR = 23, KNULL = REF_BASE-4 };
   lua_State *L = luaL_newstate();
   IRIns *ir = (IRIns *)calloc(REF_FIRST + NIR, sizeof(IRIns));
   GCtrace T;
@@ -52,9 +61,11 @@ int main(void)
 
   memset(&T, 0, sizeof(T));
   T.traceno = 1;
-  T.nk = REF_BASE;
+  T.nk = KNULL;
   T.nins = REF_FIRST + NIR;
   T.ir = ir;
+
+  setknull(&T, KNULL);
 
   setir(&T, REF_FIRST+0, IR_SLOAD, IRT_INT, 3, IRSLOAD_READONLY);
   setir(&T, REF_FIRST+1, IR_ADD, IRT_INT, REF_FIRST+0, REF_FIRST+0);
@@ -73,9 +84,12 @@ int main(void)
   setir(&T, REF_FIRST+14, IR_FLOAD, IRT_TAB, REF_FIRST+11, IRFL_TAB_META);
   setguard(&T, REF_FIRST+15, IR_ABC, IRT_INT, REF_FIRST+12, REF_FIRST+0);
   setir(&T, REF_FIRST+16, IR_AREF, IRT_P64, REF_FIRST+13, REF_FIRST+0);
-  setir(&T, REF_FIRST+17, IR_LOOP, IRT_NIL, 0, 0);
-  setir(&T, REF_FIRST+18, IR_PHI, IRT_INT, REF_FIRST+0, REF_FIRST+1);
-  setir(&T, REF_FIRST+19, IR_PHI, IRT_NUM, REF_FIRST+5, REF_FIRST+6);
+  setguard(&T, REF_FIRST+17, IR_ALOAD, IRT_NUM, REF_FIRST+16, 0);
+  setir(&T, REF_FIRST+18, IR_ASTORE, IRT_NUM, REF_FIRST+16, REF_FIRST+4);
+  setguard(&T, REF_FIRST+19, IR_EQ, IRT_P64, REF_FIRST+14, KNULL);
+  setir(&T, REF_FIRST+20, IR_LOOP, IRT_NIL, 0, 0);
+  setir(&T, REF_FIRST+21, IR_PHI, IRT_INT, REF_FIRST+0, REF_FIRST+1);
+  setir(&T, REF_FIRST+22, IR_PHI, IRT_NUM, REF_FIRST+5, REF_FIRST+6);
 
   lj_buf_init(L, &sb);
   lowered = lj_wasm_jit_build_trace(L, &T, &sb);

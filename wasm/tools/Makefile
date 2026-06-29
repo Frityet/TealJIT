@@ -50,6 +50,7 @@ trace-ir-module-check: wasm_trace_ir_module
 	$(WASM_OBJDUMP) -x $(OUT_IR) | grep -q 'i64 <- env.memory'
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i32.load'
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'f64.load'
+	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'f64.store'
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i64.load'
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i64.and'
 	$(WASM_OBJDUMP) -d $(OUT_IR) | grep -q 'i32.ge_u'
