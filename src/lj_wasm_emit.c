@@ -114,6 +114,16 @@ void lj_wasm_putimport_func(SBuf *sb, const char *module, MSize module_len,
   lj_wasm_putu32v(sb, typeidx);
 }
 
+void lj_wasm_putimport_memory(SBuf *sb, const char *module, MSize module_len,
+			      const char *name, MSize name_len, uint64_t min,
+			      uint64_t max, int hasmax, int is64)
+{
+  lj_wasm_putname(sb, module, module_len);
+  lj_wasm_putname(sb, name, name_len);
+  lj_wasm_putu8(sb, LJ_WASM_EXT_MEMORY);
+  lj_wasm_putlimits(sb, min, max, hasmax, is64);
+}
+
 void lj_wasm_putexport(SBuf *sb, const char *name, MSize name_len,
 		       uint8_t kind, uint32_t idx)
 {
@@ -136,6 +146,12 @@ void lj_wasm_putlimits(SBuf *sb, uint64_t min, uint64_t max, int hasmax,
     if (hasmax)
       lj_wasm_putu32v(sb, (uint32_t)max);
   }
+}
+
+void lj_wasm_putmemarg(SBuf *sb, uint32_t align, uint64_t ofs)
+{
+  lj_wasm_putu32v(sb, align);
+  lj_wasm_putu64v(sb, ofs);
 }
 
 void lj_wasm_putfuncbody(SBuf *sb, const SBuf *body)

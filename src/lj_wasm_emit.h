@@ -61,6 +61,9 @@ typedef enum LJWasmOpcode {
   LJ_WASM_OP_LOCAL_TEE = 0x22,
   LJ_WASM_OP_GLOBAL_GET = 0x23,
   LJ_WASM_OP_GLOBAL_SET = 0x24,
+  LJ_WASM_OP_I32_LOAD = 0x28,
+  LJ_WASM_OP_I64_LOAD = 0x29,
+  LJ_WASM_OP_F64_LOAD = 0x2b,
   LJ_WASM_OP_I32_CONST = 0x41,
   LJ_WASM_OP_I64_CONST = 0x42,
   LJ_WASM_OP_F32_CONST = 0x43,
@@ -81,6 +84,7 @@ typedef enum LJWasmOpcode {
   LJ_WASM_OP_I32_ADD = 0x6a,
   LJ_WASM_OP_I32_SUB = 0x6b,
   LJ_WASM_OP_I32_MUL = 0x6c,
+  LJ_WASM_OP_I64_ADD = 0x7c,
   LJ_WASM_OP_F64_ADD = 0xa0,
   LJ_WASM_OP_F64_SUB = 0xa1,
   LJ_WASM_OP_F64_MUL = 0xa2,
@@ -109,10 +113,16 @@ LJ_FUNC void lj_wasm_putfunctype(SBuf *sb, const uint8_t *params,
 LJ_FUNC void lj_wasm_putimport_func(SBuf *sb, const char *module,
 				    MSize module_len, const char *name,
 				    MSize name_len, uint32_t typeidx);
+LJ_FUNC void lj_wasm_putimport_memory(SBuf *sb, const char *module,
+				      MSize module_len, const char *name,
+				      MSize name_len, uint64_t min,
+				      uint64_t max, int hasmax,
+				      int is64);
 LJ_FUNC void lj_wasm_putexport(SBuf *sb, const char *name, MSize name_len,
 			       uint8_t kind, uint32_t idx);
 LJ_FUNC void lj_wasm_putlimits(SBuf *sb, uint64_t min, uint64_t max,
 			       int hasmax, int is64);
+LJ_FUNC void lj_wasm_putmemarg(SBuf *sb, uint32_t align, uint64_t ofs);
 LJ_FUNC void lj_wasm_putfuncbody(SBuf *sb, const SBuf *body);
 
 #endif

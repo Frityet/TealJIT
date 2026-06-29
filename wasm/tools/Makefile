@@ -2,6 +2,7 @@ CC ?= cc
 EMCC ?= emcc
 LLVM_OBJDUMP ?= llvm-objdump
 WASM_VALIDATE ?= wasm-validate
+WASM_VALIDATE_FLAGS ?= --enable-memory64
 ROOT := ../..
 SRC := $(ROOT)/src
 CFLAGS ?= -std=c99 -Wall -Wextra -Werror -I$(SRC)
@@ -34,19 +35,19 @@ trace-module-check: wasm_nyi_trace_module
 	./wasm_nyi_trace_module > $(OUT)
 	test `wc -c < $(OUT)` -gt 8
 	$(LLVM_OBJDUMP) -h $(OUT) >/dev/null
-	$(WASM_VALIDATE) $(OUT)
+	$(WASM_VALIDATE) $(WASM_VALIDATE_FLAGS) $(OUT)
 
 trace-ir-module-check: wasm_trace_ir_module
 	./wasm_trace_ir_module > $(OUT_IR)
 	test `wc -c < $(OUT_IR)` -gt 8
 	$(LLVM_OBJDUMP) -h $(OUT_IR) >/dev/null
-	$(WASM_VALIDATE) $(OUT_IR)
+	$(WASM_VALIDATE) $(WASM_VALIDATE_FLAGS) $(OUT_IR)
 
 trace-fallback-module-check: wasm_trace_fallback_module
 	./wasm_trace_fallback_module > $(OUT_FALLBACK)
 	test `wc -c < $(OUT_FALLBACK)` -gt 8
 	$(LLVM_OBJDUMP) -h $(OUT_FALLBACK) >/dev/null
-	$(WASM_VALIDATE) $(OUT_FALLBACK)
+	$(WASM_VALIDATE) $(WASM_VALIDATE_FLAGS) $(OUT_FALLBACK)
 
 trace-enter-contract-check: wasm_trace_enter_contract
 	./wasm_trace_enter_contract
