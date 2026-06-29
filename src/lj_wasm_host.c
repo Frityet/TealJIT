@@ -17,7 +17,8 @@ extern void lj_wasm_import_ffi_unload(LJWasmHostHandle handle);
 extern int lj_wasm_import_ffi_symbol(LJWasmHostHandle handle, const char *name,
 				     LJWasmHostHandle *symbol);
 extern int lj_wasm_import_ffi_call(struct CTState *cts, struct CType *ct,
-				   struct CCallState *cc);
+				   struct CCallState *cc,
+				   const LJWasmFFICall *call);
 extern int lj_wasm_import_ffi_callback_new(uint32_t slot, uint32_t ctypeid,
 					   LJWasmHostHandle *handle);
 extern int lj_wasm_import_ffi_callback_slot(LJWasmHostHandle handle,
@@ -52,9 +53,9 @@ int lj_wasm_host_ffi_symbol(LJWasmHostHandle handle, const char *name,
 }
 
 int lj_wasm_host_ffi_call(struct CTState *cts, struct CType *ct,
-			  struct CCallState *cc)
+			  struct CCallState *cc, const LJWasmFFICall *call)
 {
-  return lj_wasm_import_ffi_call(cts, ct, cc);
+  return lj_wasm_import_ffi_call(cts, ct, cc, call);
 }
 
 int lj_wasm_host_ffi_callback_new(uint32_t slot, uint32_t ctypeid,

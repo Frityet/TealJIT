@@ -33,12 +33,41 @@ typedef enum LJWasmScalarType {
   LJ_WASM_SCALAR_AGG
 } LJWasmScalarType;
 
+#define LJ_WASM_FFI_MAX_ARGS		16u
+
+typedef enum LJWasmFFILoc {
+  LJ_WASM_FFI_LOC_NONE,
+  LJ_WASM_FFI_LOC_GPR,
+  LJ_WASM_FFI_LOC_FPR,
+  LJ_WASM_FFI_LOC_STACK,
+  LJ_WASM_FFI_LOC_RETREF
+} LJWasmFFILoc;
+
+#define LJ_WASM_FFI_SIG_F_VARARG	0x01u
+#define LJ_WASM_FFI_SIG_F_UNSUPPORTED	0x80u
+
+#define LJ_WASM_FFI_SLOT_F_UNSIGNED	0x01u
+
 typedef struct LJWasmFFISig {
   uint32_t ctypeid;		/* LuaJIT CTypeID of the function. */
-  uint16_t nargs;		/* Number of fixed arguments. */
+  uint16_t nargs;		/* Number of populated argument slots. */
   uint8_t flags;		/* Vararg/calling-convention flags. */
   uint8_t rettype;		/* LJWasmScalarType. */
 } LJWasmFFISig;
+
+typedef struct LJWasmFFISlot {
+  uint8_t type;			/* LJWasmScalarType. */
+  uint8_t loc;			/* LJWasmFFILoc in CCallState. */
+  uint16_t flags;		/* LJ_WASM_FFI_SLOT_F_* flags. */
+  uint32_t offset;		/* Byte offset from CCallState*. */
+  uint32_t size;		/* Original CType storage size. */
+} LJWasmFFISlot;
+
+typedef struct LJWasmFFICall {
+  LJWasmFFISig sig;
+  LJWasmFFISlot ret;
+  LJWasmFFISlot args[LJ_WASM_FFI_MAX_ARGS];
+} LJWasmFFICall;
 
 #define LJ_WASM_JIT_F_IR_LOWERED	0x00000001u
 #define LJ_WASM_JIT_F_IMPORT_ENV_MEMORY	0x00000002u
@@ -70,7 +99,8 @@ LJ_FUNC void lj_wasm_host_ffi_unload(LJWasmHostHandle handle);
 LJ_FUNC int lj_wasm_host_ffi_symbol(LJWasmHostHandle handle, const char *name,
 				    LJWasmHostHandle *symbol);
 LJ_FUNC int lj_wasm_host_ffi_call(struct CTState *cts, struct CType *ct,
-				  struct CCallState *cc);
+				  struct CCallState *cc,
+				  const LJWasmFFICall *call);
 LJ_FUNC int lj_wasm_host_ffi_callback_new(uint32_t slot, uint32_t ctypeid,
 					  LJWasmHostHandle *handle);
 LJ_FUNC int lj_wasm_host_ffi_callback_slot(LJWasmHostHandle handle,

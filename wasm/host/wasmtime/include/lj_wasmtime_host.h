@@ -44,12 +44,41 @@ typedef enum LJWasmScalarType {
   LJ_WASM_SCALAR_AGG
 } LJWasmScalarType;
 
+#define LJ_WASM_FFI_MAX_ARGS 16u
+
+typedef enum LJWasmFFILoc {
+  LJ_WASM_FFI_LOC_NONE,
+  LJ_WASM_FFI_LOC_GPR,
+  LJ_WASM_FFI_LOC_FPR,
+  LJ_WASM_FFI_LOC_STACK,
+  LJ_WASM_FFI_LOC_RETREF
+} LJWasmFFILoc;
+
+#define LJ_WASM_FFI_SIG_F_VARARG 0x01u
+#define LJ_WASM_FFI_SIG_F_UNSUPPORTED 0x80u
+
+#define LJ_WASM_FFI_SLOT_F_UNSIGNED 0x01u
+
 typedef struct LJWasmFFISig {
   uint32_t ctypeid;
   uint16_t nargs;
   uint8_t flags;
   uint8_t rettype;
 } LJWasmFFISig;
+
+typedef struct LJWasmFFISlot {
+  uint8_t type;
+  uint8_t loc;
+  uint16_t flags;
+  uint32_t offset;
+  uint32_t size;
+} LJWasmFFISlot;
+
+typedef struct LJWasmFFICall {
+  LJWasmFFISig sig;
+  LJWasmFFISlot ret;
+  LJWasmFFISlot args[LJ_WASM_FFI_MAX_ARGS];
+} LJWasmFFICall;
 
 #define LJ_WASM_JIT_F_IR_LOWERED 0x00000001u
 #define LJ_WASM_JIT_F_IMPORT_ENV_MEMORY 0x00000002u
@@ -77,7 +106,8 @@ typedef int (*LJWasmtimeFFISymbolFn)(void *ctx, LJWasmHostHandle handle,
                                      const char *name,
                                      LJWasmHostHandle *symbol);
 typedef int (*LJWasmtimeFFICallFn)(void *ctx, struct CTState *cts,
-                                   struct CType *ct, struct CCallState *cc);
+                                   struct CType *ct, struct CCallState *cc,
+                                   const LJWasmFFICall *call);
 typedef int (*LJWasmtimeFFICallbackNewFn)(void *ctx, uint32_t slot,
                                           uint32_t ctypeid,
                                           LJWasmHostHandle *handle);
@@ -133,7 +163,8 @@ void lj_wasm_import_ffi_unload(LJWasmHostHandle handle);
 int lj_wasm_import_ffi_symbol(LJWasmHostHandle handle, const char *name,
                               LJWasmHostHandle *symbol);
 int lj_wasm_import_ffi_call(struct CTState *cts, struct CType *ct,
-                            struct CCallState *cc);
+                            struct CCallState *cc,
+                            const LJWasmFFICall *call);
 int lj_wasm_import_ffi_callback_new(uint32_t slot, uint32_t ctypeid,
                                     LJWasmHostHandle *handle);
 int lj_wasm_import_ffi_callback_slot(LJWasmHostHandle handle, uint32_t *slot);

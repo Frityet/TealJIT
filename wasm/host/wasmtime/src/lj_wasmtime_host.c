@@ -12,8 +12,8 @@ const LJWasmtimeImportSpec lj_wasmtime_host_imports[] = {
      "(handle: host_handle, name: guest_ptr, symbol_out: guest_ptr) -> i32",
      "Resolve a symbol from a loaded FFI handle."},
     {LJ_WASMTIME_IMPORT_MODULE, LJ_WASMTIME_IMPORT_FFI_CALL,
-     "(cts: guest_ptr, ct: guest_ptr, cc: guest_ptr) -> i32",
-     "Marshal and perform an FFI call described by LuaJIT C state."},
+     "(cts: guest_ptr, ct: guest_ptr, cc: guest_ptr, call: guest_ptr) -> i32",
+     "Marshal and perform an FFI call described by LuaJIT C state and a scalar call descriptor."},
     {LJ_WASMTIME_IMPORT_MODULE, LJ_WASMTIME_IMPORT_FFI_CALLBACK_NEW,
      "(slot: u32, ctypeid: u32, handle_out: guest_ptr) -> i32",
      "Create a callable host/table callback handle for a LuaJIT callback slot."},
@@ -139,12 +139,14 @@ int lj_wasm_import_ffi_symbol(LJWasmHostHandle handle, const char *name,
 }
 
 int lj_wasm_import_ffi_call(struct CTState *cts, struct CType *ct,
-                            struct CCallState *cc) {
-  if (cts == NULL || ct == NULL || cc == NULL) {
+                            struct CCallState *cc,
+                            const LJWasmFFICall *call) {
+  if (cts == NULL || ct == NULL || cc == NULL || call == NULL) {
     return LJ_WASM_HOST_ERR;
   }
   if (lj_wasmtime_hooks.ffi_call != NULL) {
-    return lj_wasmtime_hooks.ffi_call(lj_wasmtime_hooks.ctx, cts, ct, cc);
+    return lj_wasmtime_hooks.ffi_call(lj_wasmtime_hooks.ctx, cts, ct, cc,
+                                      call);
   }
   return LJ_WASM_HOST_NYI;
 }

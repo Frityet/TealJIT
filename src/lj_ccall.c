@@ -19,6 +19,140 @@
 #include "lj_wasm_host.h"
 #endif
 
+#if LJ_TARGET_WASM
+static void ccall_wasm_unsupported(LJWasmFFICall *call)
+{
+  call->sig.flags |= LJ_WASM_FFI_SIG_F_UNSUPPORTED;
+}
+
+static uint8_t ccall_wasm_scalar_type(CTInfo info, CTSize size)
+{
+  if (ctype_isvoid(info))
+    return LJ_WASM_SCALAR_VOID;
+  if (ctype_isfp(info))
+    return size == 4 ? LJ_WASM_SCALAR_F32 :
+	   size == 8 ? LJ_WASM_SCALAR_F64 : LJ_WASM_SCALAR_AGG;
+  if (ctype_isinteger_or_bool(info) || ctype_isenum(info))
+    return size <= 4 ? LJ_WASM_SCALAR_I32 :
+	   size <= 8 ? LJ_WASM_SCALAR_I64 : LJ_WASM_SCALAR_AGG;
+  if (ctype_isptr(info) || ctype_isarray(info) || ctype_isfunc(info))
+    return LJ_WASM_SCALAR_PTR;
+  return LJ_WASM_SCALAR_AGG;
+}
+
+static uint16_t ccall_wasm_slot_flags(CTInfo info)
+{
+  return (uint16_t)((info & CTF_UNSIGNED) ? LJ_WASM_FFI_SLOT_F_UNSIGNED : 0);
+}
+
+static CTSize ccall_wasm_slot_size(CType *ct, CTSize abisize)
+{
+  CTInfo info = ct->info;
+  if (ctype_isptr(info) || ctype_isarray(info) || ctype_isfunc(info))
+    return CTSIZE_PTR;
+  return ct->size != 0 ? ct->size : abisize;
+}
+
+static uint8_t ccall_wasm_loc(CCallState *cc, const void *dp,
+			      uint32_t *offset)
+{
+  const uint8_t *p = (const uint8_t *)dp;
+  const uint8_t *base = (const uint8_t *)cc;
+  const uint8_t *lo, *hi;
+
+  lo = (const uint8_t *)&cc->gpr[0];
+  hi = (const uint8_t *)&cc->gpr[CCALL_NUM_GPR];
+  if (p >= lo && p < hi) {
+    *offset = (uint32_t)(p - base);
+    return LJ_WASM_FFI_LOC_GPR;
+  }
+
+  lo = (const uint8_t *)&cc->fpr[0];
+  hi = (const uint8_t *)&cc->fpr[CCALL_NUM_FPR];
+  if (p >= lo && p < hi) {
+    *offset = (uint32_t)(p - base);
+    return LJ_WASM_FFI_LOC_FPR;
+  }
+
+  lo = (const uint8_t *)&cc->stack[0];
+  hi = (const uint8_t *)&cc->stack[CCALL_NUM_STACK];
+  if (p >= lo && p < hi) {
+    *offset = (uint32_t)(p - base);
+    return LJ_WASM_FFI_LOC_STACK;
+  }
+
+  *offset = 0;
+  return LJ_WASM_FFI_LOC_NONE;
+}
+
+static void ccall_wasm_set_slot(LJWasmFFICall *call, LJWasmFFISlot *slot,
+				CCallState *cc, CType *ct, CTSize abisize,
+				void *dp, int byref)
+{
+  CTSize size = ccall_wasm_slot_size(ct, abisize);
+  uint8_t type = ccall_wasm_scalar_type(ct->info, size);
+  uint32_t offset = 0;
+  uint8_t loc = byref ? LJ_WASM_FFI_LOC_RETREF :
+		ccall_wasm_loc(cc, dp, &offset);
+
+  slot->type = type;
+  slot->loc = loc;
+  slot->flags = ccall_wasm_slot_flags(ct->info);
+  slot->offset = offset;
+  slot->size = size;
+
+  if (byref || type == LJ_WASM_SCALAR_AGG || loc == LJ_WASM_FFI_LOC_NONE)
+    ccall_wasm_unsupported(call);
+}
+
+static void ccall_wasm_init(LJWasmFFICall *call, CTInfo info, CType *ctr,
+			    CCallState *cc)
+{
+  LJWasmFFISlot *ret;
+  uint8_t type;
+  uint32_t offset = 0;
+
+  memset(call, 0, sizeof(*call));
+  ret = &call->ret;
+  type = ccall_wasm_scalar_type(ctr->info, ctr->size);
+  call->sig.flags = (uint8_t)((info & CTF_VARARG) ?
+			      LJ_WASM_FFI_SIG_F_VARARG : 0);
+  call->sig.rettype = type;
+  ret->type = type;
+  ret->flags = ccall_wasm_slot_flags(ctr->info);
+  ret->size = ctr->size;
+
+  if (type == LJ_WASM_SCALAR_VOID) {
+    ret->loc = LJ_WASM_FFI_LOC_NONE;
+  } else if (type == LJ_WASM_SCALAR_F32 || type == LJ_WASM_SCALAR_F64) {
+    ret->loc = ccall_wasm_loc(cc, &cc->fpr[0], &offset);
+    ret->offset = offset;
+  } else if (type == LJ_WASM_SCALAR_I32 || type == LJ_WASM_SCALAR_I64 ||
+	     type == LJ_WASM_SCALAR_PTR) {
+    ret->loc = ccall_wasm_loc(cc, &cc->gpr[0], &offset);
+    ret->offset = offset;
+  } else {
+    ret->loc = LJ_WASM_FFI_LOC_RETREF;
+    ccall_wasm_unsupported(call);
+  }
+
+  if ((info & CTF_VARARG))
+    ccall_wasm_unsupported(call);
+}
+
+static void ccall_wasm_add_arg(LJWasmFFICall *call, CCallState *cc,
+			       CType *ct, CTSize size, void *dp, int byref,
+			       MSize idx)
+{
+  if (idx >= LJ_WASM_FFI_MAX_ARGS) {
+    ccall_wasm_unsupported(call);
+    return;
+  }
+  ccall_wasm_set_slot(call, &call->args[idx], cc, ct, size, dp, byref);
+  call->sig.nargs = (uint16_t)(idx + 1);
+}
+#endif
+
 /* Target-specific handling of register arguments. */
 #if LJ_TARGET_X86
 /* -- x86 calling conventions --------------------------------------------- */
@@ -1006,7 +1140,11 @@ CTypeID lj_ccall_ctid_vararg(CTState *cts, cTValue *o)
 ** Note: may reallocate cts->tab and invalidate CType pointers.
 */
 static int ccall_set_args(lua_State *L, CTState *cts, CType *ct,
-			  CCallState *cc)
+			  CCallState *cc
+#if LJ_TARGET_WASM
+			  , LJWasmFFICall *wcall
+#endif
+			  )
 {
   int gcsteps = 0;
   TValue *o, *top = L->top;
@@ -1041,6 +1179,9 @@ static int ccall_set_args(lua_State *L, CTState *cts, CType *ct,
 
   /* Perform required setup for some result types. */
   ctr = ctype_rawchild(cts, ct);
+#if LJ_TARGET_WASM
+  ccall_wasm_init(wcall, info, ctr, cc);
+#endif
   if (ctype_isvector(ctr->info)) {
     if (!(CCALL_VECTOR_REG && (ctr->size == 8 || ctr->size == 16)))
       goto err_nyi;
@@ -1147,6 +1288,9 @@ static int ccall_set_args(lua_State *L, CTState *cts, CType *ct,
     isva = 0;
 
   done:
+#if LJ_TARGET_WASM
+    ccall_wasm_add_arg(wcall, cc, d, sz, dp, rp != NULL, narg-1);
+#endif
     if (rp) {  /* Pass by reference. */
       gcsteps++;
       *(void **)dp = rp;
@@ -1273,13 +1417,21 @@ int lj_ccall_func(lua_State *L, GCcdata *cd)
   if (ctype_isfunc(ct->info)) {
     CTypeID id = ctype_typeid(cts, ct);
     CCallState cc;
+#if LJ_TARGET_WASM
+    LJWasmFFICall wcall;
+#endif
     int gcsteps, ret;
     cc.func = (void (*)(void))cdata_getptr(cdataptr(cd), sz);
+#if LJ_TARGET_WASM
+    gcsteps = ccall_set_args(L, cts, ct, &cc, &wcall);
+    wcall.sig.ctypeid = id;
+#else
     gcsteps = ccall_set_args(L, cts, ct, &cc);
+#endif
     cts->cb.slot = ~0u;
 #if LJ_TARGET_WASM
     ct = ctype_get(cts, id);  /* Table may have been reallocated. */
-    if (lj_wasm_host_ffi_call(cts, ct, &cc) != LJ_WASM_HOST_OK)
+    if (lj_wasm_host_ffi_call(cts, ct, &cc, &wcall) != LJ_WASM_HOST_OK)
       lj_err_caller(L, LJ_ERR_FFI_NYICALL);
 #else
     lj_vm_ffi_call(&cc);
