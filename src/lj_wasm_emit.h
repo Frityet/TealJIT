@@ -75,6 +75,7 @@ typedef enum LJWasmOpcode {
   LJ_WASM_OP_I32_GT_S = 0x4a,
   LJ_WASM_OP_I32_LE_S = 0x4c,
   LJ_WASM_OP_I32_GE_S = 0x4e,
+  LJ_WASM_OP_I32_GE_U = 0x4f,
   LJ_WASM_OP_I64_EQ = 0x51,
   LJ_WASM_OP_I64_LT_U = 0x54,
   LJ_WASM_OP_F64_EQ = 0x61,
@@ -88,6 +89,7 @@ typedef enum LJWasmOpcode {
   LJ_WASM_OP_I32_MUL = 0x6c,
   LJ_WASM_OP_I64_ADD = 0x7c,
   LJ_WASM_OP_I64_AND = 0x83,
+  LJ_WASM_OP_I64_SHL = 0x86,
   LJ_WASM_OP_I64_SHR_U = 0x88,
   LJ_WASM_OP_F64_ADD = 0xa0,
   LJ_WASM_OP_F64_SUB = 0xa1,
@@ -95,6 +97,7 @@ typedef enum LJWasmOpcode {
   LJ_WASM_OP_F64_DIV = 0xa3,
   LJ_WASM_OP_I32_WRAP_I64 = 0xa7,
   LJ_WASM_OP_I32_TRUNC_F64_S = 0xaa,
+  LJ_WASM_OP_I64_EXTEND_I32_U = 0xad,
   LJ_WASM_OP_F64_CONVERT_I32_S = 0xb7,
   LJ_WASM_OP_F64_REINTERPRET_I64 = 0xbf
 } LJWasmOpcode;
