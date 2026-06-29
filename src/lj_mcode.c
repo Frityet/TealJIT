@@ -65,7 +65,7 @@ void lj_mcode_sync(void *start, void *end)
 
 #if LJ_HASJIT
 
-#if LUAJIT_SECURITY_MCODE != 0
+#if LUAJIT_SECURITY_MCODE != 0 && !LJ_TARGET_WASM
 /* Protection twiddling failed. Probably due to kernel security. */
 static LJ_NORET LJ_NOINLINE void mcode_protfail(jit_State *J)
 {

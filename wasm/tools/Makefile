@@ -8,7 +8,8 @@ WASM64_CFLAGS ?= -sMEMORY64=1 -std=c99 -Wall -Wextra -Werror -I$(SRC)
 LDLIBS ?= -lm -ldl
 OUT ?= /tmp/lj-wasm-nyi-trace.wasm
 WASM64_CHECK_DIR ?= /tmp/lj-wasm64-support-check
-WASM64_SKIP_SRC := luajit.c ljamalg.c lj_asm.c lj_mcode.c lj_gdbjit.c
+# The amalgam currently follows lj_asm.c into the missing WASM assembler.
+WASM64_SKIP_SRC := ljamalg.c lj_asm.c
 WASM64_CORE_SRC := $(filter-out $(WASM64_SKIP_SRC),$(notdir $(wildcard $(SRC)/*.c)))
 
 .PHONY: check trace-module-check wasm64-support-check clean
