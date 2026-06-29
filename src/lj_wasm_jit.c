@@ -400,7 +400,9 @@ static int wasm_trace_supported(const GCtrace *T)
 	  !wasm_ref_can_type(T, ir->op1, LJ_WASM_TYPE_I32))
 	return 0;
       break;
+    case IR_LT:
     case IR_LE:
+    case IR_GT:
     case IR_GE: {
       uint8_t type = wasm_ref_fixed_type(T, ir->op1);
       if (!type) type = wasm_ref_fixed_type(T, ir->op2);
@@ -690,7 +692,13 @@ static int wasm_emit_order_guard(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
   if (!wasm_emit_ref(ctx, ir->op1, type) ||
       !wasm_emit_ref(ctx, ir->op2, type))
     return 0;
-  if (ir->o == IR_GE)
+  if (ir->o == IR_LT)
+    lj_wasm_putu8(ctx->body, type == LJ_WASM_TYPE_F64 ?
+		  LJ_WASM_OP_F64_LT : LJ_WASM_OP_I32_LT_S);
+  else if (ir->o == IR_GT)
+    lj_wasm_putu8(ctx->body, type == LJ_WASM_TYPE_F64 ?
+		  LJ_WASM_OP_F64_GT : LJ_WASM_OP_I32_GT_S);
+  else if (ir->o == IR_GE)
     lj_wasm_putu8(ctx->body, type == LJ_WASM_TYPE_F64 ?
 		  LJ_WASM_OP_F64_GE : LJ_WASM_OP_I32_GE_S);
   else
@@ -979,7 +987,9 @@ static int wasm_emit_trace_body(lua_State *L, const GCtrace *T, SBuf *body)
       if (!wasm_emit_conv(&ctx, ref, ir))
 	return 0;
       break;
+    case IR_LT:
     case IR_LE:
+    case IR_GT:
     case IR_GE:
       if (!wasm_emit_order_guard(&ctx, ref, ir))
 	return 0;

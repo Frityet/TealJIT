@@ -14,6 +14,7 @@ except ImportError as exc:
 
 LJ_TISNUM_TAG_HI = 0xFFF90000
 EXIT_FPR4 = 32
+EXIT_FPR5 = 40
 EXIT_GPR2 = 144
 
 
@@ -66,10 +67,24 @@ def check_normal_exit(memory, store, entry, base, exit_state, start, end_index):
         raise SystemExit(f"expected exit-state loop index {end_index}, got {idx}")
 
 
+def check_while_exit(memory, store, entry, base, exit_state):
+    write_f64(memory, store, base + 0, 0.0)  # accumulator SLOAD #2
+    write_f64(memory, store, base + 8, 0.0)  # loop index SLOAD #3
+    ok = i32_result(entry(store, 0, base, exit_state, 0))
+    if ok != 3:
+        raise SystemExit(f"expected while loop guard failure status 3, got {ok}")
+    acc = read_f64(memory, store, exit_state + EXIT_FPR5)
+    idx = read_f64(memory, store, exit_state + EXIT_FPR4)
+    if acc != 5050.0:
+        raise SystemExit(f"expected while accumulator 5050.0, got {acc}")
+    if idx != 100.0:
+        raise SystemExit(f"expected while loop index 100.0, got {idx}")
+
+
 def main(argv):
     if len(argv) not in (2, 3):
         raise SystemExit(
-            "usage: wasm_trace_runtime_check.py TRACE_MODULE.wasm [up|down]"
+            "usage: wasm_trace_runtime_check.py TRACE_MODULE.wasm [up|down|while]"
         )
 
     mode = argv[2] if len(argv) == 3 else "up"
@@ -81,6 +96,9 @@ def main(argv):
         check_normal_exit(memory, store, entry, base, exit_state, 1.0, 101)
     elif mode == "down":
         check_normal_exit(memory, store, entry, base, exit_state, 100.0, 0)
+        return
+    elif mode == "while":
+        check_while_exit(memory, store, entry, base, exit_state)
         return
     else:
         raise SystemExit(f"unknown trace runtime mode {mode!r}")
