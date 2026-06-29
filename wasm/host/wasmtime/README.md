@@ -29,9 +29,12 @@ named `lj_wasm_import_*`.
 - `src/lj_wasmtime_host.c` provides default stub implementations for all eight
   `lj_wasm_import_*` imports. Embedders can install hooks with
   `lj_wasmtime_host_set_hooks`.
+- `tests/host_contract_test.c` exercises the JIT hook delegation and default
+  status behavior without linking Wasmtime.
 - `examples/wasmtime_linker_pseudocode.rs` sketches how a Rust Wasmtime host
   would register the imports. It is documentation only and is not built here.
-- `Makefile` provides a local syntax check using the available C compiler.
+- `Makefile` provides local syntax and contract checks using the available C
+  compiler.
 
 ## Wasmtime Mapping Notes
 
@@ -56,5 +59,5 @@ Run:
 make -C wasm/host/wasmtime check
 ```
 
-This checks that the scaffold is valid C without requiring Rust, Cargo, or a
-Wasmtime SDK.
+This checks that the scaffold is valid C and runs the host hook contract test
+without requiring Rust, Cargo, or a Wasmtime SDK.
