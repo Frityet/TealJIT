@@ -22,6 +22,7 @@
 #include "lj_lex.h"
 #include "lj_bcdump.h"
 #include "lj_parse.h"
+#include "lj_teal.h"
 
 /* -- Load Lua source code and bytecode ----------------------------------- */
 
@@ -47,7 +48,8 @@ static TValue *cpparser(lua_State *L, lua_CFunction dummy, void *ud)
       lj_err_throw(L, LUA_ERRSYNTAX);
     }
   }
-  pt = bc ? lj_bcread(ls) : lj_parse(ls);
+  pt = bc ? lj_bcread(ls) : (lj_teal_enabled(ls) ? lj_teal_parse(ls) :
+			     lj_parse(ls));
   if (ls->fr2 == LJ_FR2) {
     fn = lj_func_newL_empty(L, pt, tabref(L->env));
     /* Don't combine above/below into one statement. */
@@ -182,4 +184,3 @@ LUA_API int lua_dump(lua_State *L, lua_Writer writer, void *data)
   else
     return 1;
 }
-

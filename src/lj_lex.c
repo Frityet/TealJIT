@@ -9,6 +9,8 @@
 #define lj_lex_c
 #define LUA_CORE
 
+#include <string.h>
+
 #include "lj_obj.h"
 #include "lj_gc.h"
 #include "lj_err.h"
@@ -87,6 +89,23 @@ static void lex_newline(LexState *ls)
   if (lex_iseol(ls) && ls->c != old) lex_next(ls);  /* Skip "\n\r" or "\r\n". */
   if (++ls->linenumber >= LJ_MAX_LINE)
     lj_lex_error(ls, ls->tok, LJ_ERR_XLINES);
+}
+
+/* Parse Teal line pragmas from short comments. */
+static void lex_teal_pragma(LexState *ls)
+{
+  const char *p = ls->p - 1;
+  const char *pe = ls->pe;
+  if (!ls->teal || ls->c != '#') return;
+  if (pe - p >= 18 && memcmp(p, "#pragma strict off", 18) == 0 &&
+      (pe - p == 18 || p[18] == ' ' || p[18] == '\t' ||
+       p[18] == '\r' || p[18] == '\n')) {
+    ls->teal_strict = 0;
+  } else if (pe - p >= 17 && memcmp(p, "#pragma strict on", 17) == 0 &&
+	     (pe - p == 17 || p[17] == ' ' || p[17] == '\t' ||
+	      p[17] == '\r' || p[17] == '\n')) {
+    ls->teal_strict = 1;
+  }
 }
 
 /* -- Scanner for terminals ----------------------------------------------- */
@@ -333,6 +352,7 @@ static LexToken lex_scan(LexState *ls, TValue *tv)
 	}
       }
       /* Short comment "--.*\n". */
+      lex_teal_pragma(ls);
       while (!lex_iseol(ls) && ls->c != LEX_EOF)
 	lex_next(ls);
       continue;
@@ -412,6 +432,8 @@ int lj_lex_setup(lua_State *L, LexState *ls)
   ls->lastline = 1;
   ls->endmark = 0;
   ls->fr2 = LJ_FR2;  /* Generate native bytecode by default. */
+  ls->teal = 0;
+  ls->teal_strict = 0;
   lex_next(ls);  /* Read-ahead first char. */
   if (ls->c == 0xef && ls->p + 2 <= ls->pe && (uint8_t)ls->p[0] == 0xbb &&
       (uint8_t)ls->p[1] == 0xbf) {  /* Skip UTF-8 BOM (if buffered). */
@@ -512,4 +534,3 @@ void lj_lex_init(lua_State *L)
     s->reserved = (uint8_t)(i+1);
   }
 }
-

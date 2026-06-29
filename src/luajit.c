@@ -18,6 +18,7 @@
 #include "luajit.h"
 
 #include "lj_arch.h"
+#include "lj_teal.h"
 
 #if LJ_TARGET_POSIX
 #include <unistd.h>
@@ -86,6 +87,7 @@ static void print_usage(void)
   "  -b ...    Save or list bytecode.\n"
   "  -j cmd    Perform LuaJIT control command.\n"
   "  -O[opt]   Control LuaJIT optimizations.\n"
+  "  -t opt    Control Teal options (strict=on/off).\n"
   "  -i        Enter interactive mode after executing " LUA_QL("script") ".\n"
   "  -v        Show version information.\n"
   "  -E        Ignore environment variables.\n"
@@ -438,6 +440,7 @@ static int collectargs(char **argv, int *flags)
       *flags |= FLAGS_EXEC;
       /* fallthrough */
     case 'j':  /* LuaJIT extension */
+    case 't':  /* TealJIT extension */
     case 'l':
       *flags |= FLAGS_OPTION;
       if (argv[i][2] == '\0') {
@@ -488,6 +491,16 @@ static int runargs(lua_State *L, char **argv, int argn)
       lua_assert(cmd != NULL);
       if (dojitcmd(L, cmd))
 	return 1;
+      break;
+      }
+    case 't': {  /* TealJIT extension. */
+      const char *opt = argv[i] + 2;
+      if (*opt == '\0') opt = argv[++i];
+      lua_assert(opt != NULL);
+      if (!lj_teal_option(opt)) {
+	l_message("unknown or malformed Teal option");
+	return 1;
+      }
       break;
       }
     case 'O':  /* LuaJIT extension. */
@@ -598,4 +611,3 @@ int main(int argc, char **argv)
   lua_close(L);
   return (status || smain.status > 0) ? EXIT_FAILURE : EXIT_SUCCESS;
 }
-

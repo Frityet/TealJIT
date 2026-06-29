@@ -75,6 +75,8 @@ typedef struct LexState {
   uint32_t level;	/* Syntactical nesting level. */
   int endmark;		/* Trust bytecode end marker, even if not at EOF. */
   int fr2;		/* Generate bytecode for LJ_FR2 mode. */
+  int teal;		/* Native Teal parser mode. */
+  int teal_strict;	/* Strict Teal checks enabled. */
 } LexState;
 
 LJ_FUNC int lj_lex_setup(lua_State *L, LexState *ls);

@@ -65,7 +65,25 @@ typedef struct ExpDesc {
   ExpKind k;
   BCPos t;		/* True condition jump list. */
   BCPos f;		/* False condition jump list. */
+  uint8_t teal_type;	/* Static Teal type, if known. */
+  uint8_t teal_nil;	/* Static Teal type includes nil. */
 } ExpDesc;
+
+typedef enum TealType {
+  TEAL_T_UNKNOWN,
+  TEAL_T_ANY,
+  TEAL_T_NIL,
+  TEAL_T_BOOLEAN,
+  TEAL_T_INTEGER,
+  TEAL_T_NUMBER,
+  TEAL_T_STRING,
+  TEAL_T_RECORD
+} TealType;
+
+typedef struct TealTypeDesc {
+  uint8_t type;
+  uint8_t nilok;
+} TealTypeDesc;
 
 /* Macros for expressions. */
 #define expr_hasjump(e)		((e)->t != (e)->f)
@@ -85,6 +103,8 @@ static LJ_AINLINE void expr_init(ExpDesc *e, ExpKind k, uint32_t info)
   e->k = k;
   e->u.s.info = info;
   e->f = e->t = NO_JMP;
+  e->teal_type = TEAL_T_UNKNOWN;
+  e->teal_nil = 0;
 }
 
 /* Check number constant for +-0. */
@@ -143,6 +163,10 @@ typedef struct FuncState {
   VarIndex varmap[LJ_MAX_LOCVAR];  /* Map from register to variable idx. */
   VarIndex uvmap[LJ_MAX_UPVAL];	/* Map from upvalue to variable idx. */
   VarIndex uvtmp[LJ_MAX_UPVAL];	/* Temporary upvalue map. */
+  uint8_t teal_vtype[LJ_MAX_LOCVAR];	/* Static Teal local types. */
+  uint8_t teal_vnil[LJ_MAX_LOCVAR];	/* Static Teal local nilability. */
+  uint8_t teal_rettype;			/* Static Teal return type. */
+  uint8_t teal_retnil;			/* Static Teal return nilability. */
 } FuncState;
 
 /* Binary and unary operators. ORDER OPR */
@@ -798,8 +822,16 @@ static void bcemit_arith(FuncState *fs, BinOpr opr, ExpDesc *e1, ExpDesc *e2)
 {
   BCReg rb, rc, t;
   uint32_t op;
-  if (foldarith(opr, e1, e2))
+  uint8_t t1 = e1->teal_type, t2 = e2->teal_type;
+  if (foldarith(opr, e1, e2)) {
+    if ((t1 == TEAL_T_INTEGER || t1 == TEAL_T_NUMBER) &&
+	(t2 == TEAL_T_INTEGER || t2 == TEAL_T_NUMBER)) {
+      e1->teal_type = (opr == OPR_DIV || t1 == TEAL_T_NUMBER ||
+		       t2 == TEAL_T_NUMBER) ? TEAL_T_NUMBER : TEAL_T_INTEGER;
+      e1->teal_nil = 0;
+    }
     return;
+  }
   if (opr == OPR_POW) {
     op = BC_POW;
     rc = expr_toanyreg(fs, e2);
@@ -829,6 +861,15 @@ static void bcemit_arith(FuncState *fs, BinOpr opr, ExpDesc *e1, ExpDesc *e2)
   if (e2->k == VNONRELOC && e2->u.s.info >= fs->nactvar) fs->freereg--;
   e1->u.s.info = bcemit_ABC(fs, op, 0, rb, rc);
   e1->k = VRELOCABLE;
+  if ((t1 == TEAL_T_INTEGER || t1 == TEAL_T_NUMBER) &&
+      (t2 == TEAL_T_INTEGER || t2 == TEAL_T_NUMBER)) {
+    e1->teal_type = (opr == OPR_DIV || t1 == TEAL_T_NUMBER ||
+		     t2 == TEAL_T_NUMBER) ? TEAL_T_NUMBER : TEAL_T_INTEGER;
+    e1->teal_nil = 0;
+  } else {
+    e1->teal_type = TEAL_T_UNKNOWN;
+    e1->teal_nil = 0;
+  }
 }
 
 /* Emit comparison operator. */
@@ -878,6 +919,8 @@ static void bcemit_comp(FuncState *fs, BinOpr opr, ExpDesc *e1, ExpDesc *e2)
   bcemit_INS(fs, ins);
   eret->u.s.info = bcemit_jmp(fs);
   eret->k = VJMP;
+  eret->teal_type = TEAL_T_BOOLEAN;
+  eret->teal_nil = 0;
 }
 
 /* Fixup left side of binary operator. */
@@ -1041,6 +1084,164 @@ static GCstr *lex_str(LexState *ls)
   return s;
 }
 
+/* Check for a contextual Teal keyword. */
+static int lex_isteal(LexState *ls, const char *kw)
+{
+  GCstr *s;
+  size_t len;
+  if (!ls->teal || ls->tok != TK_name) return 0;
+  s = strV(&ls->tokval);
+  len = strlen(kw);
+  return s->len == len && memcmp(strdata(s), kw, len) == 0;
+}
+
+static int lex_optteal(LexState *ls, const char *kw)
+{
+  if (lex_isteal(ls, kw)) {
+    lj_lex_next(ls);
+    return 1;
+  }
+  return 0;
+}
+
+static void teal_type_unknown(TealTypeDesc *td)
+{
+  td->type = TEAL_T_UNKNOWN;
+  td->nilok = 0;
+}
+
+static void teal_type_from_name(TealTypeDesc *td, GCstr *s)
+{
+  const char *p = strdata(s);
+  size_t len = s->len;
+  teal_type_unknown(td);
+  if (len == 3 && memcmp(p, "any", 3) == 0) td->type = TEAL_T_ANY;
+  else if (len == 3 && memcmp(p, "nil", 3) == 0) td->type = TEAL_T_NIL;
+  else if (len == 6 && memcmp(p, "number", 6) == 0) td->type = TEAL_T_NUMBER;
+  else if (len == 7 && memcmp(p, "integer", 7) == 0) td->type = TEAL_T_INTEGER;
+  else if (len == 6 && memcmp(p, "string", 6) == 0) td->type = TEAL_T_STRING;
+  else if (len == 7 && memcmp(p, "boolean", 7) == 0) td->type = TEAL_T_BOOLEAN;
+  else td->type = TEAL_T_RECORD;
+}
+
+static const char *teal_type_name(uint8_t t)
+{
+  switch (t) {
+  case TEAL_T_ANY: return "any";
+  case TEAL_T_NIL: return "nil";
+  case TEAL_T_BOOLEAN: return "boolean";
+  case TEAL_T_INTEGER: return "integer";
+  case TEAL_T_NUMBER: return "number";
+  case TEAL_T_STRING: return "string";
+  case TEAL_T_RECORD: return "record";
+  default: return "unknown";
+  }
+}
+
+static int teal_type_assignable(TealTypeDesc want, ExpDesc *e)
+{
+  uint8_t got = e->teal_type;
+  if (want.type == TEAL_T_UNKNOWN || want.type == TEAL_T_ANY ||
+      got == TEAL_T_UNKNOWN || got == TEAL_T_ANY)
+    return 1;
+  if (got == TEAL_T_NIL)
+    return want.nilok || want.type == TEAL_T_NIL;
+  if (e->teal_nil && !want.nilok)
+    return 0;
+  if (want.type == got)
+    return 1;
+  if (want.type == TEAL_T_NUMBER && got == TEAL_T_INTEGER)
+    return 1;
+  return 0;
+}
+
+static void teal_check_assign(LexState *ls, TealTypeDesc want, ExpDesc *e,
+			      const char *what)
+{
+  if (ls->teal && ls->teal_strict && !teal_type_assignable(want, e)) {
+    const char *msg = (e->teal_type == TEAL_T_NIL || e->teal_nil) ?
+		      "strict nil safety, " : what;
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL, msg, teal_type_name(want.type));
+  }
+}
+
+static int teal_type_end(LexState *ls)
+{
+  switch (ls->tok) {
+  case ',': case ')': case '=': case ';':
+  case TK_end: case TK_then: case TK_do: case TK_eof:
+  case TK_return: case TK_local: case TK_function: case TK_if:
+  case TK_for: case TK_while: case TK_repeat: case TK_break:
+    return 1;
+  default:
+    return lex_isteal(ls, "as");
+  }
+}
+
+static TealTypeDesc teal_parse_type(LexState *ls)
+{
+  TealTypeDesc td;
+  int depth = 0;
+  teal_type_unknown(&td);
+  while (!teal_type_end(ls) || depth > 0) {
+    if (ls->tok == TK_name || (!LJ_52 && ls->tok == TK_goto)) {
+      TealTypeDesc part;
+      teal_type_from_name(&part, strV(&ls->tokval));
+      if (td.type == TEAL_T_UNKNOWN)
+	td = part;
+      else if (part.type == TEAL_T_NIL)
+	td.nilok = 1;
+      lj_lex_next(ls);
+      if (depth == 0 && ls->tok == TK_name)
+	break;
+    } else if (ls->tok == TK_nil) {
+      td.nilok = 1;
+      lj_lex_next(ls);
+    } else if (ls->tok == '|') {
+      lj_lex_next(ls);
+    } else if (ls->tok == '(' || ls->tok == '[' || ls->tok == '{') {
+      depth++;
+      lj_lex_next(ls);
+    } else if (ls->tok == ')' || ls->tok == ']' || ls->tok == '}') {
+      if (depth == 0) break;
+      depth--;
+      lj_lex_next(ls);
+    } else {
+      lj_lex_next(ls);
+    }
+  }
+  return td;
+}
+
+static TealTypeDesc teal_opt_type(LexState *ls)
+{
+  TealTypeDesc td;
+  teal_type_unknown(&td);
+  if (ls->teal && lex_opt(ls, ':'))
+    td = teal_parse_type(ls);
+  return td;
+}
+
+static void teal_skip_type_decl(LexState *ls)
+{
+  int depth = 0;
+  while (ls->tok != TK_eof) {
+    if (ls->tok == TK_end && depth == 0) {
+      lj_lex_next(ls);
+      break;
+    } else if (ls->tok == TK_function || lex_isteal(ls, "record") ||
+	       lex_isteal(ls, "interface")) {
+      depth++;
+      lj_lex_next(ls);
+    } else if (ls->tok == TK_end) {
+      depth--;
+      lj_lex_next(ls);
+    } else {
+      lj_lex_next(ls);
+    }
+  }
+}
+
 /* -- Variable handling --------------------------------------------------- */
 
 #define var_get(ls, fs, i)	((ls)->vstack[(fs)->varmap[(i)]])
@@ -1130,6 +1331,8 @@ static MSize var_lookup_(FuncState *fs, GCstr *name, ExpDesc *e, int first)
     BCReg reg = var_lookup_local(fs, name);
     if ((int32_t)reg >= 0) {  /* Local in this function? */
       expr_init(e, VLOCAL, reg);
+      e->teal_type = fs->teal_vtype[reg];
+      e->teal_nil = fs->teal_vnil[reg];
       if (!first)
 	fscope_uvmark(fs, reg);  /* Scope now has an upvalue. */
       return (MSize)(e->u.s.aux = (uint32_t)fs->varmap[reg]);
@@ -1624,6 +1827,10 @@ static void fs_init(LexState *ls, FuncState *fs)
   fs->bl = NULL;
   fs->flags = 0;
   fs->framesize = 1;  /* Minimum frame size. */
+  memset(fs->teal_vtype, 0, sizeof(fs->teal_vtype));
+  memset(fs->teal_vnil, 0, sizeof(fs->teal_vnil));
+  fs->teal_rettype = TEAL_T_UNKNOWN;
+  fs->teal_retnil = 0;
   fs->kt = lj_tab_new(L, 0, 0);
   /* Anchor table of constants in stack to avoid being collected. */
   settabV(L, L->top, fs->kt);
@@ -1812,15 +2019,28 @@ static BCReg parse_params(LexState *ls, int needself)
 {
   FuncState *fs = ls->fs;
   BCReg nparams = 0;
+  TealTypeDesc ptype[LJ_MAX_LOCVAR];
+  uint32_t i;
   lex_check(ls, '(');
-  if (needself)
+  for (i = 0; i < LJ_MAX_LOCVAR; i++) teal_type_unknown(&ptype[i]);
+  if (needself) {
     var_new_lit(ls, nparams++, "self");
+    ptype[0].type = TEAL_T_RECORD;
+  }
   if (ls->tok != ')') {
     do {
       if (ls->tok == TK_name || (!LJ_52 && ls->tok == TK_goto)) {
-	var_new(ls, nparams++, lex_str(ls));
+	BCReg n = nparams++;
+	int optional = 0;
+	var_new(ls, n, lex_str(ls));
+	if (ls->teal && lex_opt(ls, '?'))
+	  optional = 1;
+	ptype[n] = teal_opt_type(ls);
+	if (optional)
+	  ptype[n].nilok = 1;
       } else if (ls->tok == TK_dots) {
 	lj_lex_next(ls);
+	(void)teal_opt_type(ls);
 	fs->flags |= PROTO_VARARG;
 	break;
       } else {
@@ -1829,6 +2049,10 @@ static BCReg parse_params(LexState *ls, int needself)
     } while (lex_opt(ls, ','));
   }
   var_add(ls, nparams);
+  for (i = 0; i < nparams; i++) {
+    fs->teal_vtype[i] = ptype[i].type;
+    fs->teal_vnil[i] = ptype[i].nilok;
+  }
   lj_assertFS(fs->nactvar == nparams, "bad regalloc");
   bcreg_reserve(fs, nparams);
   lex_check(ls, ')');
@@ -1849,6 +2073,11 @@ static void parse_body(LexState *ls, ExpDesc *e, int needself, BCLine line)
   fscope_begin(&fs, &bl, 0);
   fs.linedefined = line;
   fs.numparams = (uint8_t)parse_params(ls, needself);
+  if (ls->teal && lex_opt(ls, ':')) {
+    TealTypeDesc ret = teal_parse_type(ls);
+    fs.teal_rettype = ret.type;
+    fs.teal_retnil = ret.nilok;
+  }
   fs.bcbase = pfs->bcbase + pfs->pc;
   fs.bclim = pfs->bclim - pfs->pc;
   bcemit_AD(&fs, BC_FUNCF, 0, 0);  /* Placeholder. */
@@ -1978,19 +2207,26 @@ static void expr_simple(LexState *ls, ExpDesc *v)
   case TK_number:
     expr_init(v, (LJ_HASFFI && tviscdata(&ls->tokval)) ? VKCDATA : VKNUM, 0);
     copyTV(ls->L, &v->u.nval, &ls->tokval);
+    v->teal_type = (LJ_DUALNUM && tvisint(&ls->tokval)) ?
+		   TEAL_T_INTEGER : TEAL_T_NUMBER;
     break;
   case TK_string:
     expr_init(v, VKSTR, 0);
     v->u.sval = strV(&ls->tokval);
+    v->teal_type = TEAL_T_STRING;
     break;
   case TK_nil:
     expr_init(v, VKNIL, 0);
+    v->teal_type = TEAL_T_NIL;
+    v->teal_nil = 1;
     break;
   case TK_true:
     expr_init(v, VKTRUE, 0);
+    v->teal_type = TEAL_T_BOOLEAN;
     break;
   case TK_false:
     expr_init(v, VKFALSE, 0);
+    v->teal_type = TEAL_T_BOOLEAN;
     break;
   case TK_dots: {  /* Vararg. */
     FuncState *fs = ls->fs;
@@ -2077,6 +2313,15 @@ static void expr_unop(LexState *ls, ExpDesc *v)
     op = BC_LEN;
   } else {
     expr_simple(ls, v);
+    while (lex_optteal(ls, "as")) {
+      TealTypeDesc cast = teal_parse_type(ls);
+      if (ls->teal_strict && !teal_type_assignable(cast, v) &&
+	  v->teal_type != TEAL_T_UNKNOWN)
+	lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		     "invalid strict cast to ", teal_type_name(cast.type));
+      v->teal_type = cast.type;
+      v->teal_nil = cast.nilok;
+    }
     return;
   }
   lj_lex_next(ls);
@@ -2212,6 +2457,12 @@ static void parse_assignment(LexState *ls, LHSVarList *lh, BCReg nvars)
 	  e.k = VNONRELOC;
 	}
       }
+      if (lh->v.k == VLOCAL) {
+	TealTypeDesc want;
+	want.type = ls->fs->teal_vtype[lh->v.u.s.info];
+	want.nilok = ls->fs->teal_vnil[lh->v.u.s.info];
+	teal_check_assign(ls, want, &e, "assignment type mismatch, ");
+      }
       bcemit_store(ls->fs, &lh->v, &e);
       return;
     }
@@ -2237,9 +2488,62 @@ static void parse_call_assign(LexState *ls)
 }
 
 /* Parse 'local' statement. */
+static void parse_teal_local_record(LexState *ls)
+{
+  FuncState *fs = ls->fs;
+  GCstr *name = lex_str(ls);
+  BCReg reg = fs->freereg;
+  var_new(ls, 0, name);
+  bcreg_reserve(fs, 1);
+  var_add(ls, 1);
+  fs->teal_vtype[reg] = TEAL_T_RECORD;
+  fs->teal_vnil[reg] = 0;
+  bcemit_AD(fs, BC_TNEW, reg, 0);
+  if (ls->tok == TK_end)
+    lj_lex_next(ls);
+  else
+    teal_skip_type_decl(ls);
+}
+
+static void parse_teal_global_record(LexState *ls)
+{
+  FuncState *fs = ls->fs;
+  ExpDesc var, val;
+  GCstr *name = lex_str(ls);
+  BCReg reg = fs->freereg;
+  expr_init(&var, VGLOBAL, 0);
+  var.u.sval = name;
+  bcreg_reserve(fs, 1);
+  expr_init(&val, VNONRELOC, reg);
+  val.teal_type = TEAL_T_RECORD;
+  bcemit_AD(fs, BC_TNEW, reg, 0);
+  bcemit_store(fs, &var, &val);
+  if (ls->tok == TK_end)
+    lj_lex_next(ls);
+  else
+    teal_skip_type_decl(ls);
+}
+
+static int parse_teal_typeonly_stmt(LexState *ls)
+{
+  if (lex_optteal(ls, "type")) {
+    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		 "type aliases are not wired into the native checker yet, ", "");
+  }
+  if (lex_optteal(ls, "interface") || lex_optteal(ls, "enum")) {
+    teal_skip_type_decl(ls);
+    return 1;
+  }
+  return 0;
+}
+
 static void parse_local(LexState *ls)
 {
-  if (lex_opt(ls, TK_function)) {  /* Local function declaration. */
+  if (lex_optteal(ls, "record")) {
+    parse_teal_local_record(ls);
+  } else if (parse_teal_typeonly_stmt(ls)) {
+    return;
+  } else if (lex_opt(ls, TK_function)) {  /* Local function declaration. */
     ExpDesc v, b;
     FuncState *fs = ls->fs;
     var_new(ls, 0, lex_str(ls));
@@ -2256,17 +2560,56 @@ static void parse_local(LexState *ls)
   } else {  /* Local variable declaration. */
     ExpDesc e;
     BCReg nexps, nvars = 0;
+    TealTypeDesc vtype[LJ_MAX_LOCVAR];
+    BCReg base = ls->fs->nactvar;
+    uint32_t i;
+    for (i = 0; i < LJ_MAX_LOCVAR; i++) teal_type_unknown(&vtype[i]);
     do {  /* Collect LHS. */
-      var_new(ls, nvars++, lex_str(ls));
+      BCReg n = nvars++;
+      var_new(ls, n, lex_str(ls));
+      if (ls->teal && lex_opt(ls, '?'))
+	vtype[n].nilok = 1;
+      if (ls->teal && ls->tok == '<') {  /* Ignore Lua 5.4-style attrs. */
+	while (ls->tok != '>' && ls->tok != TK_eof)
+	  lj_lex_next(ls);
+	lex_opt(ls, '>');
+      }
+      if (ls->teal && ls->tok == ':') {
+	TealTypeDesc t = teal_opt_type(ls);
+	vtype[n].type = t.type;
+	vtype[n].nilok |= t.nilok;
+      }
     } while (lex_opt(ls, ','));
     if (lex_opt(ls, '=')) {  /* Optional RHS. */
       nexps = expr_list(ls, &e);
+      if (nvars == 1 && nexps == 1 && vtype[0].type == TEAL_T_UNKNOWN) {
+	vtype[0].type = e.teal_type;
+	vtype[0].nilok = e.teal_nil;
+      }
+      if (nvars == 1 && nexps == 1)
+	teal_check_assign(ls, vtype[0], &e, "type mismatch, ");
     } else {  /* Or implicitly set to nil. */
       e.k = VVOID;
       nexps = 0;
+      if (ls->teal && ls->teal_strict) {
+	for (i = 0; i < nvars; i++) {
+	  if (vtype[i].type == TEAL_T_UNKNOWN) {
+	    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+			 "strict local needs a type or initializer, ", "");
+	  } else if (!vtype[i].nilok && vtype[i].type != TEAL_T_ANY &&
+		     vtype[i].type != TEAL_T_NIL) {
+	    lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+			 "strict nil safety for local, ", teal_type_name(vtype[i].type));
+	  }
+	}
+      }
     }
     assign_adjust(ls, nvars, nexps, &e);
     var_add(ls, nvars);
+    for (i = 0; i < nvars; i++) {
+      ls->fs->teal_vtype[base+i] = vtype[i].type;
+      ls->fs->teal_vnil[base+i] = vtype[i].nilok;
+    }
   }
 }
 
@@ -2316,6 +2659,12 @@ static void parse_return(LexState *ls)
   } else {  /* Return with one or more values. */
     ExpDesc e;  /* Receives the _last_ expression in the list. */
     BCReg nret = expr_list(ls, &e);
+    if (nret == 1) {
+      TealTypeDesc want;
+      want.type = fs->teal_rettype;
+      want.nilok = fs->teal_retnil;
+      teal_check_assign(ls, want, &e, "return type mismatch, ");
+    }
     if (nret == 1) {  /* Return one result. */
       if (e.k == VCALL) {  /* Check for tail call. */
 #ifdef LUAJIT_DISABLE_TAILCALL
@@ -2677,6 +3026,19 @@ static int parse_stmt(LexState *ls)
     }
     /* fallthrough */
   default:
+    if (lex_optteal(ls, "global")) {
+      if (lex_optteal(ls, "record"))
+	parse_teal_global_record(ls);
+      else
+	lj_lex_error(ls, 0, LJ_ERR_XTEAL,
+		     "unsupported global declaration, ", "");
+      break;
+    } else if (lex_optteal(ls, "record")) {
+      parse_teal_global_record(ls);
+      break;
+    } else if (parse_teal_typeonly_stmt(ls)) {
+      break;
+    }
     parse_call_assign(ls);
     break;
   }
@@ -2732,4 +3094,3 @@ GCproto *lj_parse(LexState *ls)
   lj_assertL(pt->sizeuv == 0, "toplevel proto has upvalues");
   return pt;
 }
-
