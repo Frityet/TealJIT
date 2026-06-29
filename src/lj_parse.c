@@ -5156,15 +5156,23 @@ static void parse_block(LexState *ls)
 static void parse_while(LexState *ls, BCLine line)
 {
   FuncState *fs = ls->fs;
+  ExpDesc cond;
+  TealTypeDesc old;
+  uint16_t oldshape = 0;
+  FuncState *oldshapefs = NULL;
   BCPos start, loop, condexit;
   FuncScope bl;
+  int narrowed;
   lj_lex_next(ls);  /* Skip 'while'. */
   start = fs->lasttarget = fs->pc;
-  condexit = expr_cond(ls, NULL);
+  condexit = expr_cond(ls, &cond);
   fscope_begin(fs, &bl, FSCOPE_LOOP);
   lex_check(ls, TK_do);
   loop = bcemit_AD(fs, BC_LOOP, fs->nactvar, 0);
+  narrowed = teal_apply_narrow(fs, &cond, 1, &old, &oldshape, &oldshapefs);
   parse_block(ls);
+  if (narrowed)
+    teal_restore_narrow(fs, &cond, old, oldshape, oldshapefs);
   jmp_patch(fs, bcemit_jmp(fs), start);
   lex_match(ls, TK_end, TK_while, line);
   fscope_end(fs);

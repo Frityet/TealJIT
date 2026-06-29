@@ -30,6 +30,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" tuple_types.tl
 "$LUAJIT" inferred_tuple_literals.tl
 "$LUAJIT" union_types.tl
+"$LUAJIT" while_narrow.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   echo "as_bad.tl unexpectedly passed" >&2
