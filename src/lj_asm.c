@@ -77,7 +77,7 @@ void lj_asm_trace(jit_State *J, GCtrace *T)
   J->curfinal = lj_trace_alloc(J->L, T);
 
   token = asm_wasm_reserve_token(J);
-  status = lj_wasm_jit_compile_nyi(J->L, T->traceno, &handle);
+  status = lj_wasm_jit_compile_trace(J->L, T, &handle);
   if (status != LJ_WASM_HOST_OK || handle == NULL) {
     if (handle)
       lj_wasm_host_jit_free(handle);

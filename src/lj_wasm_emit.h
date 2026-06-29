@@ -64,8 +64,30 @@ typedef enum LJWasmOpcode {
   LJ_WASM_OP_I32_CONST = 0x41,
   LJ_WASM_OP_I64_CONST = 0x42,
   LJ_WASM_OP_F32_CONST = 0x43,
-  LJ_WASM_OP_F64_CONST = 0x44
+  LJ_WASM_OP_F64_CONST = 0x44,
+  LJ_WASM_OP_I32_EQZ = 0x45,
+  LJ_WASM_OP_I32_EQ = 0x46,
+  LJ_WASM_OP_I32_NE = 0x47,
+  LJ_WASM_OP_I32_LT_S = 0x48,
+  LJ_WASM_OP_I32_GT_S = 0x4a,
+  LJ_WASM_OP_I32_LE_S = 0x4c,
+  LJ_WASM_OP_I32_GE_S = 0x4e,
+  LJ_WASM_OP_F64_EQ = 0x61,
+  LJ_WASM_OP_F64_NE = 0x62,
+  LJ_WASM_OP_F64_LT = 0x63,
+  LJ_WASM_OP_F64_GT = 0x64,
+  LJ_WASM_OP_F64_LE = 0x65,
+  LJ_WASM_OP_F64_GE = 0x66,
+  LJ_WASM_OP_I32_ADD = 0x6a,
+  LJ_WASM_OP_I32_SUB = 0x6b,
+  LJ_WASM_OP_I32_MUL = 0x6c,
+  LJ_WASM_OP_F64_ADD = 0xa0,
+  LJ_WASM_OP_F64_SUB = 0xa1,
+  LJ_WASM_OP_F64_MUL = 0xa2,
+  LJ_WASM_OP_F64_DIV = 0xa3
 } LJWasmOpcode;
+
+#define LJ_WASM_BLOCKTYPE_EMPTY	0x40
 
 /* -- Low-level writes ---------------------------------------------------- */
 

@@ -15,17 +15,27 @@ policy is:
 ## Current State
 
 The repository has target metadata for `wasm64`, a WASM target ABI header, and a
-host integration API in `src/lj_wasm_host.h`. `doc/wasm_vm.md` tracks the VM
+host integration API in `src/lj_wasm_host.h`. `src/lj_wasm_jit.c` contains the
+initial trace-module builder and a deliberately small IR-to-Wasm lowering
+scaffold for simple arithmetic/guard/PHI traces. `doc/wasm_vm.md` tracks the VM
 entry surface that must be implemented. The real VM/JIT backend is still gated
 in `src/Makefile` until these pieces exist:
 
 - `src/vm_wasm64.dasc` or an equivalent build path for the VM entry points.
 - A WebAssembly encoder/buildvm path.
-- `src/lj_emit_wasm*.h` and `src/lj_asm_wasm*.h` for trace IR lowering.
+- Full trace IR lowering, exit-state reconstruction, and host trace entry.
 - Final `CFRAME_*` layout matched to the WASM VM.
 - Full callback and exit-stub support.
 
 Native builds continue to use the existing CPU backends.
+
+## Developer Checks
+
+`make -C wasm/tools check` builds developer trace-module emitters, validates the
+generated Wasm with `llvm-objdump` and WABT `wasm-validate`, and compiles every
+`src/*.c` support object with `emcc -sMEMORY64=1`. Install WABT if
+`wasm-validate` is not already available, or override `WASM_VALIDATE` when using
+another validator wrapper.
 
 ## Host Contract
 
