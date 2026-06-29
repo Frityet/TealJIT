@@ -25,7 +25,8 @@ must provide or intentionally route through C/host support:
 - number helpers: `lj_vm_num2int_check`, `lj_vm_num2i64`,
   `lj_vm_num2u64`, `lj_vm_tobit`
 - bytecode offset base: `lj_vm_asm_begin`
-- WASM trace entry contract: `lj_vm_wasm_trace_enter`
+- WASM trace entry/exit contracts: `lj_vm_wasm_trace_enter`,
+  `lj_vm_wasm_trace_exit`
 
 Some math helpers can use C/libm on WASM (`floor`, `ceil`, `trunc`) instead of
 assembly stubs.
@@ -36,6 +37,12 @@ up `GCtrace->wasmjit`, sets `L->base`, `jit_base`, and the trace vmstate, calls
 `lj_wasm_host_jit_enter(handle, L, base, 0)`, and restores interpreter state
 when the host export returns. The generated WASM VM should call this helper
 rather than treating `GCtrace->mcode` as executable code.
+
+`lj_vm_wasm_trace_exit(lua_State *L, TraceNo parent, ExitNo exitno,
+ExitState *ex)` is the matching C-level contract for a future host/WASM exit
+bridge. Because WASM has no native trace PC register, the bridge must pass the
+parent trace and exit number explicitly before `lj_trace_exit()` restores the
+interpreter snapshot.
 
 ## Backend Options
 

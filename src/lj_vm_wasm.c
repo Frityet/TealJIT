@@ -78,7 +78,9 @@ static const LJWasmVMSymbol wasm_vm_symbols[] = {
   { "lj_vm_next", LJ_WASM_VM_JIT,
     "JIT helper for table iteration." },
   { "lj_vm_wasm_trace_enter", LJ_WASM_VM_JIT,
-    "Host-mediated entry point for compiled WASM traces." }
+    "Host-mediated entry point for compiled WASM traces." },
+  { "lj_vm_wasm_trace_exit", LJ_WASM_VM_JIT,
+    "Restore interpreter state after a compiled WASM trace exit." }
 };
 
 const LJWasmVMSymbol *lj_vm_wasm_symbols(MSize *count)
@@ -129,6 +131,34 @@ int lj_vm_wasm_trace_enter(lua_State *L, TValue *base, TraceNo traceno)
   return status;
 #else
   UNUSED(L); UNUSED(base); UNUSED(traceno);
+  return -2;  /* Matches LJ_WASM_HOST_NYI without depending on target imports. */
+#endif
+}
+
+int lj_vm_wasm_trace_exit(lua_State *L, TraceNo parent, ExitNo exitno,
+			  ExitState *ex)
+{
+#if LJ_TARGET_WASM
+  jit_State *J;
+  GCtrace *T;
+
+  if (L == NULL || ex == NULL)
+    return LJ_WASM_HOST_ERR;
+
+  J = L2J(L);
+  if (parent == 0 || parent >= J->sizetrace)
+    return LJ_WASM_HOST_ERR;
+
+  T = (GCtrace *)gcref(J->trace[parent]);
+  if (T == NULL || exitno >= T->nsnap)
+    return LJ_WASM_HOST_ERR;
+
+  J->L = L;
+  J->parent = parent;
+  J->exitno = exitno;
+  return lj_trace_exit(J, ex);
+#else
+  UNUSED(L); UNUSED(parent); UNUSED(exitno); UNUSED(ex);
   return -2;  /* Matches LJ_WASM_HOST_NYI without depending on target imports. */
 #endif
 }

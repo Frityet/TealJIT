@@ -9,6 +9,7 @@
 #include "lj_obj.h"
 #if LJ_HASJIT
 #include "lj_jit.h"
+#include "lj_target.h"
 #endif
 
 typedef enum LJWasmVMSymbolKind {
@@ -31,6 +32,8 @@ LJ_FUNC const char *lj_vm_wasm_symbol_kind_name(LJWasmVMSymbolKind kind);
 #if LJ_HASJIT
 LJ_FUNC int lj_vm_wasm_trace_enter(lua_State *L, TValue *base,
 				   TraceNo traceno);
+LJ_FUNC int lj_vm_wasm_trace_exit(lua_State *L, TraceNo parent,
+				  ExitNo exitno, ExitState *ex);
 #endif
 
 #endif
