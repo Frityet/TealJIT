@@ -24,6 +24,7 @@ grep -q "strict nil safety" /tmp/tealjit-strict-nil.out
 "$LUAJIT" global_declarations.tl
 "$LUAJIT" table_types.tl
 "$LUAJIT" for_iterators.tl
+"$LUAJIT" for_next_iterators.tl
 
 if "$LUAJIT" as_bad.tl >/tmp/tealjit-as-bad.out 2>&1; then
   echo "as_bad.tl unexpectedly passed" >&2
@@ -276,6 +277,24 @@ if "$LUAJIT" for_ipairs_map_bad.tl >/tmp/tealjit-for-ipairs-map.out 2>&1; then
   exit 1
 fi
 grep -q "attempting ipairs" /tmp/tealjit-for-ipairs-map.out
+
+if "$LUAJIT" for_next_key_bad.tl >/tmp/tealjit-for-next-key.out 2>&1; then
+  echo "for_next_key_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-for-next-key.out
+
+if "$LUAJIT" for_next_value_bad.tl >/tmp/tealjit-for-next-value.out 2>&1; then
+  echo "for_next_value_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-for-next-value.out
+
+if "$LUAJIT" for_next_non_table_bad.tl >/tmp/tealjit-for-next-non-table.out 2>&1; then
+  echo "for_next_non_table_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "attempting next" /tmp/tealjit-for-next-non-table.out
 
 if "$LUAJIT" record_method_colon_arg_bad.tl >/tmp/tealjit-method-arg.out 2>&1; then
   echo "record_method_colon_arg_bad.tl unexpectedly passed" >&2

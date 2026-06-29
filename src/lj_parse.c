@@ -133,6 +133,7 @@ typedef struct TealTypeDesc {
 #define TEAL_ITER_NONE		0
 #define TEAL_ITER_IPAIRS	1
 #define TEAL_ITER_PAIRS		2
+#define TEAL_ITER_NEXT		3
 
 typedef struct TealFuncSig {
   uint16_t first;
@@ -1480,6 +1481,8 @@ static uint8_t teal_builtin_iter_kind(GCstr *name)
     return TEAL_ITER_IPAIRS;
   if (name->len == 5 && memcmp(strdata(name), "pairs", 5) == 0)
     return TEAL_ITER_PAIRS;
+  if (name->len == 4 && memcmp(strdata(name), "next", 4) == 0)
+    return TEAL_ITER_NEXT;
   return TEAL_ITER_NONE;
 }
 
@@ -1496,7 +1499,8 @@ static void teal_apply_builtin_iter(LexState *ls, ExpDesc *e, uint8_t kind,
     if (ls->teal_strict && arg->teal_type != TEAL_T_UNKNOWN)
       lj_lex_error(ls, 0, LJ_ERR_XTEAL,
 		   kind == TEAL_ITER_IPAIRS ? "attempting ipairs, " :
-					      "attempting pairs, ",
+		   kind == TEAL_ITER_NEXT ? "attempting next, " :
+					    "attempting pairs, ",
 		   teal_type_name(arg->teal_type));
     return;
   }
@@ -3597,6 +3601,32 @@ static BCReg expr_list(LexState *ls, ExpDesc *v)
   return n;
 }
 
+static BCReg expr_list_for_iter(LexState *ls, ExpDesc *v)
+{
+  BCReg n = 1;
+  uint8_t first_iter = TEAL_ITER_NONE;
+  int have_iter = 0;
+  ExpDesc iter;
+  expr_init(&iter, VVOID, 0);
+  expr(ls, v);
+  if (v->k == VGLOBAL)
+    first_iter = teal_builtin_iter_kind(v->u.sval);
+  while (lex_opt(ls, ',')) {
+    expr_tonextreg(ls->fs, v);
+    expr(ls, v);
+    n++;
+    if (first_iter == TEAL_ITER_NEXT && n == 2) {
+      ExpDesc arg = *v;
+      teal_apply_builtin_iter(ls, &iter, TEAL_ITER_NEXT, &arg);
+      have_iter = iter.teal_iter != TEAL_ITER_NONE;
+    }
+  }
+  if (have_iter)
+    teal_iter_set(v, iter.teal_iter, teal_iter_key_type(&iter),
+		  teal_iter_val_type(&iter));
+  return n;
+}
+
 static BCReg expr_list_call(LexState *ls, ExpDesc *v, FuncState *sigfs,
 			    uint16_t sig, BCReg argbase)
 {
@@ -4625,7 +4655,7 @@ static void parse_for_iter(LexState *ls, GCstr *indexname)
     var_new(ls, nvars++, lex_str(ls));
   lex_check(ls, TK_in);
   line = ls->linenumber;
-  nexps = expr_list(ls, &e);
+  nexps = expr_list_for_iter(ls, &e);
   iterkind = e.teal_iter;
   iterkey = teal_iter_key_type(&e);
   iterval = teal_iter_val_type(&e);
