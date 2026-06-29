@@ -29,6 +29,9 @@
 #include "lj_ccall.h"
 #include "lj_ccallback.h"
 #include "lj_clib.h"
+#if LJ_TARGET_WASM
+#include "lj_wasm_host.h"
+#endif
 #include "lj_strfmt.h"
 #include "lj_ff.h"
 #include "lj_lib.h"
@@ -435,7 +438,8 @@ static int ffi_callback_set(lua_State *L, GCfunc *fn)
   CTState *cts = ctype_cts(L);
   CType *ct = ctype_raw(cts, cd->ctypeid);
   if (ctype_isptr(ct->info) && (LJ_32 || ct->size == 8)) {
-    MSize slot = lj_ccallback_ptr2slot(cts, *(void **)cdataptr(cd));
+    void *cbptr = *(void **)cdataptr(cd);
+    MSize slot = lj_ccallback_ptr2slot(cts, cbptr);
     if (slot < cts->cb.sizeid && cts->cb.cbid[slot] != 0) {
       GCtab *t = cts->miscmap;
       TValue *tv = lj_tab_setint(L, t, (int32_t)slot);
@@ -443,6 +447,9 @@ static int ffi_callback_set(lua_State *L, GCfunc *fn)
 	setfuncV(L, tv, fn);
 	lj_gc_anybarriert(L, t);
       } else {
+#if LJ_TARGET_WASM
+	lj_wasm_host_ffi_callback_free(cbptr);
+#endif
 	setnilV(tv);
 	cts->cb.cbid[slot] = 0;
 	cts->cb.topid = slot < cts->cb.topid ? slot : cts->cb.topid;

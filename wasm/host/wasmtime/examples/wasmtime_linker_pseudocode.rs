@@ -78,6 +78,40 @@ fn register_luajit_host_imports(linker: &mut Linker<HostState>) -> anyhow::Resul
 
     linker.func_wrap(
         "env",
+        "lj_wasm_import_ffi_callback_new",
+        |mut caller: Caller<'_, HostState>,
+         slot: i32,
+         ctypeid: i32,
+         handle_out_ptr: i64|
+         -> i32 {
+            let _ = (caller, slot, ctypeid, handle_out_ptr);
+            // TODO: create a callable table/host function handle that knows
+            // how to enter the guest callback slot.
+            NYI
+        },
+    )?;
+
+    linker.func_wrap(
+        "env",
+        "lj_wasm_import_ffi_callback_slot",
+        |mut caller: Caller<'_, HostState>, handle: i64, slot_out_ptr: i64| -> i32 {
+            let _ = (caller, handle, slot_out_ptr);
+            // TODO: look up the callback handle and write its LuaJIT slot.
+            NYI
+        },
+    )?;
+
+    linker.func_wrap(
+        "env",
+        "lj_wasm_import_ffi_callback_free",
+        |mut caller: Caller<'_, HostState>, handle: i64| {
+            let _ = (caller, handle);
+            // TODO: release the callback table/host function handle.
+        },
+    )?;
+
+    linker.func_wrap(
+        "env",
         "lj_wasm_import_jit_compile",
         |mut caller: Caller<'_, HostState>, module_ptr: i64, handle_out_ptr: i64| -> i32 {
             let _ = (caller, module_ptr, handle_out_ptr);

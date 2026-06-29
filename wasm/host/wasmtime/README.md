@@ -14,6 +14,9 @@ named `lj_wasm_import_*`.
 | `lj_wasm_import_ffi_unload` | Delegates to a hook when present. | Release the host library/symbol-table handle. |
 | `lj_wasm_import_ffi_symbol` | Validates inputs, clears output, delegates, otherwise returns `NYI`. | Read the guest C string and resolve a symbol from a loaded handle. |
 | `lj_wasm_import_ffi_call` | Validates opaque pointers, delegates, otherwise returns `NYI`. | Marshal `CTState`, `CType`, and `CCallState` from guest memory into a safe native call. |
+| `lj_wasm_import_ffi_callback_new` | Clears output, delegates, otherwise returns `NYI`. | Allocate a callable Wasm table/host function handle for a LuaJIT callback slot. |
+| `lj_wasm_import_ffi_callback_slot` | Validates handle/output, delegates, otherwise returns `NYI`. | Map a callback handle back to its LuaJIT callback slot for `callback:set/free`. |
+| `lj_wasm_import_ffi_callback_free` | Delegates to a hook when present. | Release a callback table/host function handle. |
 | `lj_wasm_import_jit_compile` | Validates module/output, clears output, delegates, otherwise returns `NYI`. | Decode `LJWasmJITModule`, compile the trace module with Wasmtime, and store a compiled trace handle. |
 | `lj_wasm_import_jit_free` | Delegates to a hook when present. | Drop a compiled trace handle. |
 | `lj_wasm_import_jit_enter` | Validates handle, delegates, otherwise returns `NYI`. | Enter a compiled trace export with guest state/base/exit number. |

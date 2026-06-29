@@ -61,6 +61,11 @@ LJ_FUNC int lj_wasm_host_ffi_symbol(LJWasmHostHandle handle, const char *name,
 				    LJWasmHostHandle *symbol);
 LJ_FUNC int lj_wasm_host_ffi_call(struct CTState *cts, struct CType *ct,
 				  struct CCallState *cc);
+LJ_FUNC int lj_wasm_host_ffi_callback_new(uint32_t slot, uint32_t ctypeid,
+					  LJWasmHostHandle *handle);
+LJ_FUNC int lj_wasm_host_ffi_callback_slot(LJWasmHostHandle handle,
+					   uint32_t *slot);
+LJ_FUNC void lj_wasm_host_ffi_callback_free(LJWasmHostHandle handle);
 
 LJ_FUNC int lj_wasm_host_jit_compile(const LJWasmJITModule *module,
 				     LJWasmHostHandle *handle);

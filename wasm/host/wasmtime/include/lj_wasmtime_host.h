@@ -14,6 +14,9 @@ extern "C" {
 #define LJ_WASMTIME_IMPORT_FFI_UNLOAD "lj_wasm_import_ffi_unload"
 #define LJ_WASMTIME_IMPORT_FFI_SYMBOL "lj_wasm_import_ffi_symbol"
 #define LJ_WASMTIME_IMPORT_FFI_CALL "lj_wasm_import_ffi_call"
+#define LJ_WASMTIME_IMPORT_FFI_CALLBACK_NEW "lj_wasm_import_ffi_callback_new"
+#define LJ_WASMTIME_IMPORT_FFI_CALLBACK_SLOT "lj_wasm_import_ffi_callback_slot"
+#define LJ_WASMTIME_IMPORT_FFI_CALLBACK_FREE "lj_wasm_import_ffi_callback_free"
 #define LJ_WASMTIME_IMPORT_JIT_COMPILE "lj_wasm_import_jit_compile"
 #define LJ_WASMTIME_IMPORT_JIT_FREE "lj_wasm_import_jit_free"
 #define LJ_WASMTIME_IMPORT_JIT_ENTER "lj_wasm_import_jit_enter"
@@ -65,6 +68,14 @@ typedef int (*LJWasmtimeFFISymbolFn)(void *ctx, LJWasmHostHandle handle,
                                      LJWasmHostHandle *symbol);
 typedef int (*LJWasmtimeFFICallFn)(void *ctx, struct CTState *cts,
                                    struct CType *ct, struct CCallState *cc);
+typedef int (*LJWasmtimeFFICallbackNewFn)(void *ctx, uint32_t slot,
+                                          uint32_t ctypeid,
+                                          LJWasmHostHandle *handle);
+typedef int (*LJWasmtimeFFICallbackSlotFn)(void *ctx,
+                                           LJWasmHostHandle handle,
+                                           uint32_t *slot);
+typedef void (*LJWasmtimeFFICallbackFreeFn)(void *ctx,
+                                            LJWasmHostHandle handle);
 typedef int (*LJWasmtimeJITCompileFn)(void *ctx,
                                       const LJWasmJITModule *module,
                                       LJWasmHostHandle *handle);
@@ -82,6 +93,9 @@ typedef struct LJWasmtimeHostHooks {
   LJWasmtimeFFIUnloadFn ffi_unload;
   LJWasmtimeFFISymbolFn ffi_symbol;
   LJWasmtimeFFICallFn ffi_call;
+  LJWasmtimeFFICallbackNewFn ffi_callback_new;
+  LJWasmtimeFFICallbackSlotFn ffi_callback_slot;
+  LJWasmtimeFFICallbackFreeFn ffi_callback_free;
   LJWasmtimeJITCompileFn jit_compile;
   LJWasmtimeJITFreeFn jit_free;
   LJWasmtimeJITEnterFn jit_enter;
@@ -109,6 +123,10 @@ int lj_wasm_import_ffi_symbol(LJWasmHostHandle handle, const char *name,
                               LJWasmHostHandle *symbol);
 int lj_wasm_import_ffi_call(struct CTState *cts, struct CType *ct,
                             struct CCallState *cc);
+int lj_wasm_import_ffi_callback_new(uint32_t slot, uint32_t ctypeid,
+                                    LJWasmHostHandle *handle);
+int lj_wasm_import_ffi_callback_slot(LJWasmHostHandle handle, uint32_t *slot);
+void lj_wasm_import_ffi_callback_free(LJWasmHostHandle handle);
 
 int lj_wasm_import_jit_compile(const LJWasmJITModule *module,
                                LJWasmHostHandle *handle);

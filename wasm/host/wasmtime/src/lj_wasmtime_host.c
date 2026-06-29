@@ -14,6 +14,14 @@ const LJWasmtimeImportSpec lj_wasmtime_host_imports[] = {
     {LJ_WASMTIME_IMPORT_MODULE, LJ_WASMTIME_IMPORT_FFI_CALL,
      "(cts: guest_ptr, ct: guest_ptr, cc: guest_ptr) -> i32",
      "Marshal and perform an FFI call described by LuaJIT C state."},
+    {LJ_WASMTIME_IMPORT_MODULE, LJ_WASMTIME_IMPORT_FFI_CALLBACK_NEW,
+     "(slot: u32, ctypeid: u32, handle_out: guest_ptr) -> i32",
+     "Create a callable host/table callback handle for a LuaJIT callback slot."},
+    {LJ_WASMTIME_IMPORT_MODULE, LJ_WASMTIME_IMPORT_FFI_CALLBACK_SLOT,
+     "(handle: host_handle, slot_out: guest_ptr) -> i32",
+     "Resolve a callback handle back to its LuaJIT callback slot."},
+    {LJ_WASMTIME_IMPORT_MODULE, LJ_WASMTIME_IMPORT_FFI_CALLBACK_FREE,
+     "(handle: host_handle) -> void", "Release a callback handle."},
     {LJ_WASMTIME_IMPORT_MODULE, LJ_WASMTIME_IMPORT_JIT_COMPILE,
      "(module: guest_ptr, handle_out: guest_ptr) -> i32",
      "Compile a guest-provided trace module and return a trace handle."},
@@ -103,6 +111,41 @@ int lj_wasm_import_ffi_call(struct CTState *cts, struct CType *ct,
     return lj_wasmtime_hooks.ffi_call(lj_wasmtime_hooks.ctx, cts, ct, cc);
   }
   return LJ_WASM_HOST_NYI;
+}
+
+int lj_wasm_import_ffi_callback_new(uint32_t slot, uint32_t ctypeid,
+                                    LJWasmHostHandle *handle) {
+  if (handle != NULL) {
+    *handle = NULL;
+  }
+  if (handle == NULL) {
+    return LJ_WASM_HOST_ERR;
+  }
+  if (lj_wasmtime_hooks.ffi_callback_new != NULL) {
+    return lj_wasmtime_hooks.ffi_callback_new(lj_wasmtime_hooks.ctx, slot,
+                                              ctypeid, handle);
+  }
+  return LJ_WASM_HOST_NYI;
+}
+
+int lj_wasm_import_ffi_callback_slot(LJWasmHostHandle handle, uint32_t *slot) {
+  if (slot != NULL) {
+    *slot = UINT32_MAX;
+  }
+  if (handle == NULL || slot == NULL) {
+    return LJ_WASM_HOST_ERR;
+  }
+  if (lj_wasmtime_hooks.ffi_callback_slot != NULL) {
+    return lj_wasmtime_hooks.ffi_callback_slot(lj_wasmtime_hooks.ctx, handle,
+                                               slot);
+  }
+  return LJ_WASM_HOST_NYI;
+}
+
+void lj_wasm_import_ffi_callback_free(LJWasmHostHandle handle) {
+  if (lj_wasmtime_hooks.ffi_callback_free != NULL) {
+    lj_wasmtime_hooks.ffi_callback_free(lj_wasmtime_hooks.ctx, handle);
+  }
 }
 
 int lj_wasm_import_jit_compile(const LJWasmJITModule *module,

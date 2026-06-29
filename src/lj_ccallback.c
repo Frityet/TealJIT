@@ -20,6 +20,9 @@
 #include "lj_mcode.h"
 #include "lj_trace.h"
 #include "lj_vm.h"
+#if LJ_TARGET_WASM
+#include "lj_wasm_host.h"
+#endif
 
 /* -- Target-specific handling of callback slots -------------------------- */
 
@@ -82,6 +85,12 @@ static MSize CALLBACK_OFS2SLOT(MSize ofs)
 
 #define CALLBACK_MCODE_HEAD		52
 
+#elif LJ_TARGET_WASM
+
+#define CALLBACK_MAX_SLOT		1024
+#define CALLBACK_SLOT2OFS(slot)		(0*(slot))
+#define CALLBACK_OFS2SLOT(ofs)		(0*(ofs))
+
 #else
 
 /* Missing support for this architecture. */
@@ -101,6 +110,27 @@ static MSize CALLBACK_OFS2SLOT(MSize ofs)
 #endif
 
 /* Convert callback slot number to callback function pointer. */
+#if LJ_TARGET_WASM
+static void *callback_slot2ptr(CTState *cts, MSize slot)
+{
+  LJWasmHostHandle handle = NULL;
+  uint32_t ctypeid = (uint32_t)cts->cb.cbid[slot];
+  if (lj_wasm_host_ffi_callback_new((uint32_t)slot, ctypeid, &handle) !=
+      LJ_WASM_HOST_OK || !handle)
+    lj_err_caller(cts->L, LJ_ERR_FFI_CBACKOV);
+  return handle;
+}
+
+/* Convert callback function pointer to slot number. */
+MSize lj_ccallback_ptr2slot(CTState *cts, void *p)
+{
+  uint32_t slot = ~0u;
+  UNUSED(cts);
+  if (lj_wasm_host_ffi_callback_slot(p, &slot) == LJ_WASM_HOST_OK)
+    return (MSize)slot;
+  return ~0u;  /* Not a known callback function pointer. */
+}
+#else
 static void *callback_slot2ptr(CTState *cts, MSize slot)
 {
   return (uint8_t *)cts->cb.mcode + CALLBACK_SLOT2OFS(slot);
@@ -117,6 +147,7 @@ MSize lj_ccallback_ptr2slot(CTState *cts, void *p)
   }
   return ~0u;  /* Not a known callback function pointer. */
 }
+#endif
 
 /* Initialize machine code for callback function pointers. */
 #if LJ_OS_NOJIT
@@ -295,6 +326,12 @@ static void *callback_mcode_init(global_State *g, uint32_t *page)
 #endif
 
 /* Allocate and initialize area for callback function pointers. */
+#if LJ_TARGET_WASM
+static void callback_mcode_new(CTState *cts)
+{
+  cts->cb.mcode = cts;  /* Sentinel: callbacks are host/table handles. */
+}
+#else
 static void callback_mcode_new(CTState *cts)
 {
   size_t sz = (size_t)CALLBACK_MCODE_SIZE;
@@ -336,10 +373,14 @@ static void callback_mcode_new(CTState *cts)
 #endif
 #endif
 }
+#endif
 
 /* Free area for callback function pointers. */
 void lj_ccallback_mcode_free(CTState *cts)
 {
+#if LJ_TARGET_WASM
+  UNUSED(cts);
+#else
   size_t sz = (size_t)CALLBACK_MCODE_SIZE;
   void *p = cts->cb.mcode;
   if (p == NULL) return;
@@ -350,6 +391,7 @@ void lj_ccallback_mcode_free(CTState *cts)
   munmap(p, sz);
 #else
   lj_mem_free(cts->g, p, sz);
+#endif
 #endif
 }
 
@@ -459,6 +501,23 @@ void lj_ccallback_mcode_free(CTState *cts)
       goto done; \
     } else { \
       ngpr = CCALL_NARG_GPR;  /* Prevent reordering. */ \
+    } \
+  }
+
+#elif LJ_TARGET_WASM
+
+#define CALLBACK_HANDLE_REGARG \
+  if (isfp) { \
+    if (nfpr + n <= CCALL_NARG_FPR) { \
+      sp = &cts->cb.fpr[nfpr]; \
+      nfpr += n; \
+      goto done; \
+    } \
+  } else { \
+    if (ngpr + n <= maxgpr) { \
+      sp = &cts->cb.gpr[ngpr]; \
+      ngpr += n; \
+      goto done; \
     } \
   }
 

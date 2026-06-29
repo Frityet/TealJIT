@@ -39,6 +39,9 @@ The embedding host must provide imports compatible with `src/lj_wasm_host.h`:
 - `lj_wasm_import_ffi_unload`
 - `lj_wasm_import_ffi_symbol`
 - `lj_wasm_import_ffi_call`
+- `lj_wasm_import_ffi_callback_new`
+- `lj_wasm_import_ffi_callback_slot`
+- `lj_wasm_import_ffi_callback_free`
 - `lj_wasm_import_jit_compile`
 - `lj_wasm_import_jit_free`
 - `lj_wasm_import_jit_enter`
