@@ -79,6 +79,12 @@ if "$LUAJIT" and_narrow_type_bad.tl >/tmp/tealjit-and-narrow-type.out 2>&1; then
 fi
 grep -q "type mismatch" /tmp/tealjit-and-narrow-type.out
 
+if "$LUAJIT" not_narrow_type_bad.tl >/tmp/tealjit-not-narrow-type.out 2>&1; then
+  echo "not_narrow_type_bad.tl unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "type mismatch" /tmp/tealjit-not-narrow-type.out
+
 if "$LUAJIT" record_field_unknown_read_bad.tl >/tmp/tealjit-record-read.out 2>&1; then
   echo "record_field_unknown_read_bad.tl unexpectedly passed" >&2
   exit 1

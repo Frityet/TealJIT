@@ -86,6 +86,7 @@ typedef struct ExpDesc {
   FuncState *teal_index_keytabfs;  /* Owner of teal_index_keytab. */
   uint16_t teal_index_ikey;  /* Positive integer key, if statically known. */
   uint8_t teal_narrow;	/* Condition narrows a local in the true branch. */
+  uint8_t teal_narrow_invert;  /* Truth means the local does not match. */
   uint16_t teal_narrow_reg;
   uint8_t teal_narrow_type;
   uint8_t teal_narrow_nil;
@@ -227,6 +228,7 @@ static LJ_AINLINE void expr_init(ExpDesc *e, ExpKind k, uint32_t info)
   e->teal_index_keytabfs = NULL;
   e->teal_index_ikey = 0;
   e->teal_narrow = 0;
+  e->teal_narrow_invert = 0;
   e->teal_narrow_reg = 0;
   e->teal_narrow_type = TEAL_T_UNKNOWN;
   e->teal_narrow_nil = 0;
@@ -1478,6 +1480,7 @@ static void teal_expr_set_narrow(ExpDesc *e, ExpDesc *src, TealTypeDesc t)
   if (src->k != VLOCAL)
     return;
   e->teal_narrow = 1;
+  e->teal_narrow_invert = 0;
   e->teal_narrow_reg = (uint16_t)src->u.s.info;
   e->teal_narrow_type = t.type;
   e->teal_narrow_nil = t.nilok;
@@ -4513,6 +4516,8 @@ static void expr_unop(LexState *ls, ExpDesc *v)
   }
   lj_lex_next(ls);
   expr_binop(ls, v, UNARY_PRIORITY);
+  if (op == BC_NOT && v->teal_narrow)
+    v->teal_narrow_invert = !v->teal_narrow_invert;
   bcemit_unop(ls->fs, op, v);
 }
 
@@ -5434,6 +5439,8 @@ static int teal_apply_narrow(FuncState *fs, ExpDesc *cond, int keep_matches,
   reg = (BCReg)cond->teal_narrow_reg;
   if (reg >= fs->nactvar)
     return 0;
+  if (cond->teal_narrow_invert)
+    keep_matches = !keep_matches;
   teal_get_local_static_type(fs, reg, old, oldshape, oldshapefs);
   teal_type_from_narrow(cond, &target);
   if (!teal_narrow_filter_type(fs->ls, *old, target, keep_matches, &narrowed))

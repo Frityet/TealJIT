@@ -64,3 +64,17 @@ assert(and_text == "branch")
 local and_maybe: integer | nil = 5
 local and_number: integer = and_maybe is integer and and_maybe + 1 or 0
 assert(and_number == 6)
+
+if not (other is string) then
+   local not_narrowed_int: integer = other
+   assert(not_narrowed_int == 12)
+end
+
+if not (text_or_int is integer) then
+   local not_narrowed_text: string = text_or_int
+   assert(not_narrowed_text == "hello")
+end
+
+local not_and_union: string | integer = 8
+local not_and_number: integer = not (not_and_union is string) and not_and_union or 0
+assert(not_and_number == 8)
