@@ -119,11 +119,10 @@ fn register_luajit_host_imports(linker: &mut Linker<HostState>) -> anyhow::Resul
         "lj_wasm_import_jit_compile",
         |mut caller: Caller<'_, HostState>, module_ptr: i64, handle_out_ptr: i64| -> i32 {
             let _ = (caller, module_ptr, handle_out_ptr);
-            // TODO: read LJWasmJITModule, copy module bytes out of guest
-            // memory, compile them with Wasmtime, and instantiate with the
-            // current LuaJIT memory64 object if IMPORT_ENV_MEMORY is set.
-            // Store a trace handle containing the instance, typed entry export,
-            // and memory identity.
+            // TODO: call lj_wasmtime_guest_jit_compile with the per-instance
+            // guest context. The helper reads LJWasmJITModule, copies module
+            // bytes out of guest memory for the raw compile import, and writes
+            // the compiled trace handle ID back to the guest.
             NYI
         },
     )?;
@@ -133,7 +132,8 @@ fn register_luajit_host_imports(linker: &mut Linker<HostState>) -> anyhow::Resul
         "lj_wasm_import_jit_free",
         |mut caller: Caller<'_, HostState>, handle: i64| {
             let _ = (caller, handle);
-            // TODO: drop the compiled trace handle.
+            // TODO: call lj_wasmtime_guest_jit_free with the per-instance
+            // guest context.
         },
     )?;
 
@@ -148,8 +148,8 @@ fn register_luajit_host_imports(linker: &mut Linker<HostState>) -> anyhow::Resul
          exitno: i32|
          -> i32 {
             let _ = (caller, handle, lua_state, base, exit_state, exitno);
-            // TODO: call the compiled trace entry export and translate traps
-            // into LuaJIT host status codes.
+            // TODO: call lj_wasmtime_guest_jit_enter with the per-instance
+            // guest context and return the trace status.
             NYI
         },
     )?;
@@ -159,8 +159,8 @@ fn register_luajit_host_imports(linker: &mut Linker<HostState>) -> anyhow::Resul
         "lj_wasm_import_jit_patch_exit",
         |mut caller: Caller<'_, HostState>, from: i64, exitno: i32, to: i64| -> i32 {
             let _ = (caller, from, exitno, to);
-            // TODO: record an exit continuation from one trace handle to
-            // another. The guest-visible handles must remain opaque.
+            // TODO: call lj_wasmtime_guest_jit_patch_exit with the
+            // per-instance guest context.
             NYI
         },
     )?;

@@ -663,6 +663,104 @@ int lj_wasmtime_guest_ffi_call(LJWasmtimeGuestContext *ctx, uint64_t cts_ptr,
   return status;
 }
 
+int lj_wasmtime_guest_jit_compile(LJWasmtimeGuestContext *ctx,
+                                  uint64_t module_ptr,
+                                  uint64_t handle_out_ptr) {
+  LJWasmJITModule module;
+  LJWasmJITModule host_module;
+  uint8_t *bytes_copy;
+  uint64_t bytes_ptr;
+  LJWasmHostHandle host_handle = NULL;
+  uint64_t guest_handle = 0;
+  int status;
+
+  if (ctx == NULL) {
+    return LJ_WASM_HOST_ERR;
+  }
+  status = lj_wasmtime_guest_read(&ctx->memory, module_ptr, &module,
+                                  sizeof(module));
+  if (status != LJ_WASM_HOST_OK) {
+    return status;
+  }
+  if (module.bytes == NULL || module.size == 0 ||
+      module.size > LJ_WASMTIME_GUEST_MAX_MODULE_SIZE) {
+    return LJ_WASM_HOST_ERR;
+  }
+  bytes_ptr = (uint64_t)(uintptr_t)module.bytes;
+  bytes_copy = (uint8_t *)malloc(module.size);
+  if (bytes_copy == NULL) {
+    return LJ_WASM_HOST_ERR;
+  }
+  status = lj_wasmtime_guest_read(&ctx->memory, bytes_ptr, bytes_copy,
+                                  module.size);
+  if (status != LJ_WASM_HOST_OK) {
+    free(bytes_copy);
+    return status;
+  }
+  host_module = module;
+  host_module.bytes = bytes_copy;
+  status = lj_wasm_import_jit_compile(&host_module, &host_handle);
+  free(bytes_copy);
+  if (status != LJ_WASM_HOST_OK) {
+    return status;
+  }
+  status = lj_wasmtime_guest_handle_alloc(&ctx->handles, host_handle,
+                                          &guest_handle);
+  if (status != LJ_WASM_HOST_OK) {
+    lj_wasm_import_jit_free(host_handle);
+    return status;
+  }
+  status = lj_wasmtime_guest_write_handle(ctx, handle_out_ptr, guest_handle);
+  if (status != LJ_WASM_HOST_OK) {
+    lj_wasm_import_jit_free(host_handle);
+    lj_wasmtime_guest_handle_release(&ctx->handles, guest_handle);
+  }
+  return status;
+}
+
+void lj_wasmtime_guest_jit_free(LJWasmtimeGuestContext *ctx,
+                                uint64_t guest_handle) {
+  LJWasmHostHandle host_handle = NULL;
+  if (ctx == NULL || guest_handle == 0) {
+    return;
+  }
+  if (lj_wasmtime_guest_handle_get(&ctx->handles, guest_handle,
+                                   &host_handle) == LJ_WASM_HOST_OK) {
+    lj_wasm_import_jit_free(host_handle);
+    lj_wasmtime_guest_handle_release(&ctx->handles, guest_handle);
+  }
+}
+
+int lj_wasmtime_guest_jit_enter(LJWasmtimeGuestContext *ctx,
+                                uint64_t guest_handle, uint64_t lua_state,
+                                uint64_t base, uint64_t exit_state,
+                                uint32_t exitno) {
+  LJWasmHostHandle host_handle = NULL;
+  if (ctx == NULL ||
+      lj_wasmtime_guest_handle_get(&ctx->handles, guest_handle,
+                                   &host_handle) != LJ_WASM_HOST_OK) {
+    return LJ_WASM_HOST_ERR;
+  }
+  return lj_wasm_import_jit_enter(host_handle, (void *)(uintptr_t)lua_state,
+                                  (void *)(uintptr_t)base,
+                                  (void *)(uintptr_t)exit_state, exitno);
+}
+
+int lj_wasmtime_guest_jit_patch_exit(LJWasmtimeGuestContext *ctx,
+                                     uint64_t from_handle, uint32_t exitno,
+                                     uint64_t to_handle) {
+  LJWasmHostHandle from = NULL;
+  LJWasmHostHandle to = NULL;
+  if (ctx == NULL ||
+      lj_wasmtime_guest_handle_get(&ctx->handles, from_handle, &from) !=
+          LJ_WASM_HOST_OK ||
+      lj_wasmtime_guest_handle_get(&ctx->handles, to_handle, &to) !=
+          LJ_WASM_HOST_OK) {
+    return LJ_WASM_HOST_ERR;
+  }
+  return lj_wasm_import_jit_patch_exit(from, exitno, to);
+}
+
 int lj_wasmtime_host_validate_jit_module(const LJWasmJITModule *module) {
   const uint32_t known_flags =
       LJ_WASM_JIT_F_IR_LOWERED | LJ_WASM_JIT_F_IMPORT_ENV_MEMORY;

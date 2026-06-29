@@ -25,6 +25,7 @@ extern "C" {
 #define LJ_WASMTIME_HANDLE_MAX 1024u
 #define LJ_WASMTIME_GUEST_MAX_CSTR 4096u
 #define LJ_WASMTIME_GUEST_MAX_CCALL_SIZE 4096u
+#define LJ_WASMTIME_GUEST_MAX_MODULE_SIZE (64u * 1024u * 1024u)
 
 struct CCallState;
 struct CTState;
@@ -209,6 +210,18 @@ int lj_wasmtime_guest_ffi_symbol(LJWasmtimeGuestContext *ctx,
 int lj_wasmtime_guest_ffi_call(LJWasmtimeGuestContext *ctx, uint64_t cts_ptr,
                                uint64_t ct_ptr, uint64_t cc_ptr,
                                uint64_t call_ptr);
+int lj_wasmtime_guest_jit_compile(LJWasmtimeGuestContext *ctx,
+                                  uint64_t module_ptr,
+                                  uint64_t handle_out_ptr);
+void lj_wasmtime_guest_jit_free(LJWasmtimeGuestContext *ctx,
+                                uint64_t guest_handle);
+int lj_wasmtime_guest_jit_enter(LJWasmtimeGuestContext *ctx,
+                                uint64_t guest_handle, uint64_t lua_state,
+                                uint64_t base, uint64_t exit_state,
+                                uint32_t exitno);
+int lj_wasmtime_guest_jit_patch_exit(LJWasmtimeGuestContext *ctx,
+                                     uint64_t from_handle, uint32_t exitno,
+                                     uint64_t to_handle);
 
 int lj_wasm_import_ffi_load(const char *name, int global,
                             LJWasmHostHandle *handle);

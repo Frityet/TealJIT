@@ -61,6 +61,13 @@ handles out of guest memory, and call the raw `lj_wasm_import_*` ABI functions.
 native symbol handle only in the temporary copy, calls the scalar backend, then
 writes the updated frame back with the guest handle ID restored.
 
+For JIT traces, `lj_wasmtime_guest_jit_compile`,
+`lj_wasmtime_guest_jit_enter`, `lj_wasmtime_guest_jit_patch_exit`, and
+`lj_wasmtime_guest_jit_free` perform the matching guest-memory and handle-ID
+translation. `jit_compile` reads `LJWasmJITModule` from guest memory, copies the
+pointed-to module bytes into host memory for the raw compile import, and stores a
+guest-visible compiled-trace handle ID.
+
 Host handles should be opaque guest-visible IDs or table indexes rather than raw
 native pointers. The guest stores them in pointer-sized slots, but the host owns
 the backing objects and lifetime.
@@ -107,4 +114,5 @@ This checks that the scaffold is valid C and runs the host hook contract test
 without requiring Rust, Cargo, or a Wasmtime SDK. With libffi available, the
 contract test also loads `libm`, calls `cos(0.0)`, resolves default-namespace
 `abs`, checks descriptor rejection cases, and runs a translated guest-memory FFI
-call through the guest wrapper path.
+call through the guest wrapper path. The JIT contract also compiles, enters,
+patches, frees, and rejects a freed trace through the guest wrapper path.

@@ -19,13 +19,13 @@ static void store_f64(void *base, uint32_t offset, double value) {
   memcpy((uint8_t *)base + offset, &value, sizeof(value));
 }
 
-#if LJ_WASMTIME_ENABLE_LIBFFI
 static uint64_t load_u64(const void *base, uint32_t offset) {
   uint64_t value;
   memcpy(&value, (const uint8_t *)base + offset, sizeof(value));
   return value;
 }
 
+#if LJ_WASMTIME_ENABLE_LIBFFI
 static void store_u64(void *base, uint32_t offset, uint64_t value) {
   memcpy((uint8_t *)base + offset, &value, sizeof(value));
 }
@@ -434,6 +434,61 @@ int main(void) {
 
   lj_wasm_import_jit_free(handle);
   assert(ctx.free_calls == 1);
+
+  {
+    enum {
+      GUEST_JIT_HANDLE_OUT = 8,
+      GUEST_JIT_BYTES = 64,
+      GUEST_JIT_MODULE = 128
+    };
+    uint8_t guest_jit_bytes[256];
+    LJWasmtimeGuestContext guest_jit_ctx;
+    LJWasmJITModule guest_module;
+    uint64_t guest_trace;
+    uint64_t guest_linked;
+
+    memset(guest_jit_bytes, 0, sizeof(guest_jit_bytes));
+    lj_wasmtime_guest_context_init(&guest_jit_ctx, guest_jit_bytes,
+                                   sizeof(guest_jit_bytes));
+    assert(lj_wasmtime_guest_write(&guest_jit_ctx.memory, GUEST_JIT_BYTES,
+                                   module_bytes, sizeof(module_bytes)) ==
+           LJ_WASM_HOST_OK);
+    guest_module = module;
+    guest_module.bytes = (const uint8_t *)(uintptr_t)GUEST_JIT_BYTES;
+    assert(lj_wasmtime_guest_write(&guest_jit_ctx.memory, GUEST_JIT_MODULE,
+                                   &guest_module, sizeof(guest_module)) ==
+           LJ_WASM_HOST_OK);
+    assert(lj_wasmtime_guest_jit_compile(&guest_jit_ctx, GUEST_JIT_MODULE,
+                                         GUEST_JIT_HANDLE_OUT) ==
+           LJ_WASM_HOST_OK);
+    guest_trace = load_u64(guest_jit_bytes, GUEST_JIT_HANDLE_OUT);
+    assert(guest_trace != 0);
+    assert(ctx.compile_calls == 2);
+    assert(ctx.last_trace == 42);
+
+    assert(lj_wasmtime_guest_jit_enter(&guest_jit_ctx, guest_trace, 0x10,
+                                       0x20, 0x30, 9) == LJ_WASM_HOST_OK);
+    assert(ctx.enter_calls == 2);
+    assert(ctx.last_lua_state == (void *)(uintptr_t)0x10);
+    assert(ctx.last_base == (void *)(uintptr_t)0x20);
+    assert(ctx.last_exit_state == (void *)(uintptr_t)0x30);
+    assert(ctx.last_exitno == 9);
+
+    assert(lj_wasmtime_guest_handle_alloc(&guest_jit_ctx.handles,
+                                          &ctx.linked_handle,
+                                          &guest_linked) == LJ_WASM_HOST_OK);
+    assert(lj_wasmtime_guest_jit_patch_exit(&guest_jit_ctx, guest_trace, 7,
+                                            guest_linked) ==
+           LJ_WASM_HOST_OK);
+    assert(ctx.patch_calls == 2);
+    assert(ctx.last_exitno == 7);
+
+    lj_wasmtime_guest_jit_free(&guest_jit_ctx, guest_trace);
+    assert(ctx.free_calls == 2);
+    assert(lj_wasmtime_guest_jit_enter(&guest_jit_ctx, guest_trace, 0x10,
+                                       0x20, 0x30, 0) ==
+           LJ_WASM_HOST_ERR);
+  }
 
   lj_wasmtime_host_clear_hooks();
 #if LJ_WASMTIME_ENABLE_LIBFFI
