@@ -32,3 +32,27 @@ if maybe_number is integer then
    local narrowed_number: integer = maybe_number
    assert(narrowed_number == 4)
 end
+
+if other is string then
+   local narrowed_text_again: string = other
+else
+   local narrowed_int_again: integer = other
+   assert(narrowed_int_again == 12)
+end
+
+local maybe_nil: integer | nil = nil
+if maybe_nil is integer then
+   local narrowed_integer: integer = maybe_nil
+   assert(narrowed_integer == 1)
+else
+   local narrowed_nil: nil = maybe_nil
+   assert(narrowed_nil == nil)
+end
+
+if text_or_int is string | boolean then
+   local narrowed_intersection: string = text_or_int
+   assert(narrowed_intersection == "hello")
+else
+   local narrowed_remaining: integer = text_or_int
+   assert(narrowed_remaining == 0)
+end

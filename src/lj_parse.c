@@ -5226,43 +5226,109 @@ static void parse_for(LexState *ls, BCLine line)
   fscope_end(fs);  /* Resolve break list. */
 }
 
-static int teal_apply_true_narrow(FuncState *fs, ExpDesc *cond,
-				  TealTypeDesc *old,
-				  uint16_t *oldshape,
-				  FuncState **oldshapefs)
+static void teal_get_local_static_type(FuncState *fs, BCReg reg,
+				       TealTypeDesc *t,
+				       uint16_t *shape,
+				       FuncState **shapefs)
 {
-  TealTypeDesc t;
+  teal_type_unknown(t);
+  t->type = fs->teal_vtype[reg];
+  t->nilok = fs->teal_vnil[reg];
+  t->sig = fs->teal_vsig[reg];
+  t->sigfs = fs->teal_vsigfs[reg];
+  t->tab = fs->teal_vtab[reg];
+  t->tabfs = fs->teal_vtabfs[reg];
+  *shape = fs->teal_vshape[reg];
+  *shapefs = fs->teal_vshapefs[reg];
+}
+
+static void teal_type_from_narrow(ExpDesc *cond, TealTypeDesc *t)
+{
+  teal_type_unknown(t);
+  t->type = cond->teal_narrow_type;
+  t->nilok = cond->teal_narrow_nil;
+  t->sig = cond->teal_narrow_sig;
+  t->sigfs = cond->teal_narrow_sigfs;
+  t->tab = cond->teal_narrow_tab;
+  t->tabfs = cond->teal_narrow_tabfs;
+}
+
+static void teal_narrow_merge_part(LexState *ls, TealTypeDesc *out,
+				   TealTypeDesc part)
+{
+  part.nilok = 0;
+  teal_type_merge(ls, out, part);
+}
+
+static int teal_narrow_filter_type(LexState *ls, TealTypeDesc old,
+				   TealTypeDesc target, int keep_matches,
+				   TealTypeDesc *out)
+{
+  TealTypeDesc nonnil, nilpart;
+  int added = 0;
+  teal_type_unknown(out);
+  if (old.type == TEAL_T_UNKNOWN || old.type == TEAL_T_ANY)
+    return 0;
+  if (old.type == TEAL_T_UNION) {
+    TealUnionType *tu = teal_union_type(old.tabfs, old.tab);
+    uint16_t i;
+    if (tu == NULL)
+      return 0;
+    for (i = 0; i < tu->count; i++) {
+      TealTypeDesc part = old.tabfs->teal_union_parts[tu->first+i];
+      int match = teal_type_desc_assignable(target, part);
+      if ((keep_matches && match) || (!keep_matches && !match)) {
+	teal_narrow_merge_part(ls, out, part);
+	added = 1;
+      }
+    }
+  } else if (old.type != TEAL_T_NIL) {
+    nonnil = old;
+    nonnil.nilok = 0;
+    if ((keep_matches && teal_type_desc_assignable(target, nonnil)) ||
+	(!keep_matches && !teal_type_desc_assignable(target, nonnil))) {
+      teal_narrow_merge_part(ls, out, nonnil);
+      added = 1;
+    }
+  }
+  if (old.nilok || old.type == TEAL_T_NIL) {
+    teal_type_unknown(&nilpart);
+    nilpart.type = TEAL_T_NIL;
+    nilpart.nilok = 1;
+    if ((keep_matches && teal_type_desc_assignable(target, nilpart)) ||
+	(!keep_matches && !teal_type_desc_assignable(target, nilpart))) {
+      teal_type_merge(ls, out, nilpart);
+      added = 1;
+    }
+  }
+  return added;
+}
+
+static int teal_apply_narrow(FuncState *fs, ExpDesc *cond, int keep_matches,
+			     TealTypeDesc *old,
+			     uint16_t *oldshape,
+			     FuncState **oldshapefs)
+{
+  TealTypeDesc target, narrowed;
   BCReg reg;
   if (!fs->ls->teal || !cond->teal_narrow)
     return 0;
   reg = (BCReg)cond->teal_narrow_reg;
   if (reg >= fs->nactvar)
     return 0;
-  teal_type_unknown(old);
-  old->type = fs->teal_vtype[reg];
-  old->nilok = fs->teal_vnil[reg];
-  old->sig = fs->teal_vsig[reg];
-  old->sigfs = fs->teal_vsigfs[reg];
-  old->tab = fs->teal_vtab[reg];
-  old->tabfs = fs->teal_vtabfs[reg];
-  *oldshape = fs->teal_vshape[reg];
-  *oldshapefs = fs->teal_vshapefs[reg];
-  teal_type_unknown(&t);
-  t.type = cond->teal_narrow_type;
-  t.nilok = cond->teal_narrow_nil;
-  t.sig = cond->teal_narrow_sig;
-  t.sigfs = cond->teal_narrow_sigfs;
-  t.tab = cond->teal_narrow_tab;
-  t.tabfs = cond->teal_narrow_tabfs;
-  teal_set_local_type(fs, reg, t);
+  teal_get_local_static_type(fs, reg, old, oldshape, oldshapefs);
+  teal_type_from_narrow(cond, &target);
+  if (!teal_narrow_filter_type(fs->ls, *old, target, keep_matches, &narrowed))
+    return 0;
+  teal_set_local_type(fs, reg, narrowed);
   fs->teal_vshape[reg] = 0;
   fs->teal_vshapefs[reg] = NULL;
   return 1;
 }
 
-static void teal_restore_true_narrow(FuncState *fs, ExpDesc *cond,
-				     TealTypeDesc old, uint16_t oldshape,
-				     FuncState *oldshapefs)
+static void teal_restore_narrow(FuncState *fs, ExpDesc *cond,
+				TealTypeDesc old, uint16_t oldshape,
+				FuncState *oldshapefs)
 {
   BCReg reg = (BCReg)cond->teal_narrow_reg;
   teal_set_local_type(fs, reg, old);
@@ -5271,7 +5337,7 @@ static void teal_restore_true_narrow(FuncState *fs, ExpDesc *cond,
 }
 
 /* Parse condition and 'then' block. */
-static BCPos parse_then(LexState *ls)
+static BCPos parse_then(LexState *ls, ExpDesc *outcond)
 {
   FuncState *fs = ls->fs;
   ExpDesc cond;
@@ -5283,10 +5349,12 @@ static BCPos parse_then(LexState *ls)
   lj_lex_next(ls);  /* Skip 'if' or 'elseif'. */
   condexit = expr_cond(ls, &cond);
   lex_check(ls, TK_then);
-  narrowed = teal_apply_true_narrow(fs, &cond, &old, &oldshape, &oldshapefs);
+  narrowed = teal_apply_narrow(fs, &cond, 1, &old, &oldshape, &oldshapefs);
   parse_block(ls);
   if (narrowed)
-    teal_restore_true_narrow(fs, &cond, old, oldshape, oldshapefs);
+    teal_restore_narrow(fs, &cond, old, oldshape, oldshapefs);
+  if (outcond != NULL)
+    *outcond = cond;
   return condexit;
 }
 
@@ -5294,19 +5362,28 @@ static BCPos parse_then(LexState *ls)
 static void parse_if(LexState *ls, BCLine line)
 {
   FuncState *fs = ls->fs;
+  ExpDesc cond;
   BCPos flist;
   BCPos escapelist = NO_JMP;
-  flist = parse_then(ls);
+  expr_init(&cond, VVOID, 0);
+  flist = parse_then(ls, &cond);
   while (ls->tok == TK_elseif) {  /* Parse multiple 'elseif' blocks. */
     jmp_append(fs, &escapelist, bcemit_jmp(fs));
     jmp_tohere(fs, flist);
-    flist = parse_then(ls);
+    flist = parse_then(ls, &cond);
   }
   if (ls->tok == TK_else) {  /* Parse optional 'else' block. */
+    TealTypeDesc old;
+    uint16_t oldshape = 0;
+    FuncState *oldshapefs = NULL;
+    int narrowed;
     jmp_append(fs, &escapelist, bcemit_jmp(fs));
     jmp_tohere(fs, flist);
     lj_lex_next(ls);  /* Skip 'else'. */
+    narrowed = teal_apply_narrow(fs, &cond, 0, &old, &oldshape, &oldshapefs);
     parse_block(ls);
+    if (narrowed)
+      teal_restore_narrow(fs, &cond, old, oldshape, oldshapefs);
   } else {
     jmp_append(fs, &escapelist, flist);
   }
