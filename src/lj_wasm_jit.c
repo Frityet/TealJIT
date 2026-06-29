@@ -9,6 +9,9 @@
 #include "lj_obj.h"
 #include "lj_buf.h"
 #include "lj_wasm_emit.h"
+#if LJ_TARGET_WASM
+#include "lj_wasm_host.h"
+#endif
 #include "lj_wasm_jit.h"
 
 static void wasm_sbuf_free(lua_State *L, SBuf *sb)
@@ -71,3 +74,29 @@ void lj_wasm_jit_build_nyi(lua_State *L, SBuf *module)
   wasm_sbuf_free(L, &func);
   wasm_sbuf_free(L, &type);
 }
+
+#if LJ_TARGET_WASM
+int lj_wasm_jit_compile_nyi(lua_State *L, uint32_t traceno,
+			    LJWasmHostHandle *handle)
+{
+  LJWasmJITModule module;
+  SBuf sb;
+  int status;
+
+  lj_buf_init(L, &sb);
+  lj_wasm_jit_build_nyi(L, &sb);
+
+  module.bytes = (const uint8_t *)sb.b;
+  module.size = sbuflen(&sb);
+  module.trace = traceno;
+  module.entry = 0;
+  module.exit = 0;
+  module.flags = 0;
+
+  status = lj_wasm_host_jit_compile(&module, handle);
+
+  if (sb.b)
+    lj_buf_free(G(L), &sb);
+  return status;
+}
+#endif
