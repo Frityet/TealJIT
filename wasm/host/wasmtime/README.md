@@ -33,8 +33,8 @@ named `lj_wasm_import_*`.
 - `tests/host_contract_test.c` exercises the JIT hook delegation and default
   status behavior without linking Wasmtime.
 - `tests/guest_runtime_check.py` builds on the Python Wasmtime package and the
-  shared C scaffold to run an actual memory64 guest module through imported FFI
-  wrapper functions.
+  shared C scaffold to run actual memory64 guest modules through imported FFI
+  and JIT wrapper functions.
 - `examples/wasmtime_linker_pseudocode.rs` sketches how a Rust Wasmtime host
   would register the imports. It is documentation only and is not built here.
 - `Makefile` provides local syntax and contract checks using the available C
@@ -126,6 +126,7 @@ With libffi and the Python `wasmtime` package available, run:
 make -C wasm/host/wasmtime guest-runtime-check
 ```
 
-This compiles `liblj_wasmtime_host.so`, instantiates a tiny memory64 Wasmtime
-module, and verifies guest imports for `ffi_load`, `ffi_symbol`, `ffi_call`, and
-`ffi_unload` against real guest memory offsets and handle IDs.
+This compiles `liblj_wasmtime_host.so`, instantiates tiny memory64 Wasmtime
+modules, and verifies guest imports for `ffi_load`, `ffi_symbol`, `ffi_call`,
+`ffi_unload`, `jit_compile`, `jit_enter`, `jit_patch_exit`, and `jit_free`
+against real guest memory offsets and handle IDs.

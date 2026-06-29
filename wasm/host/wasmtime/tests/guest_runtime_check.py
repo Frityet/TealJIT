@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise Wasmtime guest-memory FFI wrappers through an actual memory64 module."""
+"""Exercise Wasmtime guest-memory wrappers through actual memory64 modules."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ except ImportError as exc:
 
 OK = 0
 ERR = -1
+JIT_ENTER_STATUS = 77
 
 HANDLE_MAX = 1024
 FFI_MAX_ARGS = 16
@@ -32,6 +33,16 @@ LIB_HANDLE = 8
 SYMBOL_HANDLE = 16
 CCALL_FRAME = 128
 CALL_DESC = 256
+
+JIT_BYTES = 1024
+JIT_MODULE_A = 2048
+JIT_MODULE_B = 2112
+JIT_HANDLE_A = 64
+JIT_HANDLE_B = 72
+
+JIT_F_IR_LOWERED = 0x00000001
+JIT_F_IMPORT_ENV_MEMORY = 0x00000002
+JIT_MEMORY_F_64 = 0x00000001
 
 
 class LJWasmFFISig(ctypes.Structure):
@@ -65,6 +76,21 @@ class LJWasmFFICall(ctypes.Structure):
     ]
 
 
+class LJWasmJITModule(ctypes.Structure):
+    _fields_ = [
+        ("bytes", ctypes.POINTER(ctypes.c_uint8)),
+        ("size", ctypes.c_size_t),
+        ("trace", ctypes.c_uint32),
+        ("entry", ctypes.c_uint32),
+        ("exit", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("memory_min", ctypes.c_uint64),
+        ("memory_max", ctypes.c_uint64),
+        ("memory_flags", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+    ]
+
+
 class LJWasmtimeGuestMemory(ctypes.Structure):
     _fields_ = [
         ("data", ctypes.POINTER(ctypes.c_uint8)),
@@ -81,6 +107,48 @@ class LJWasmtimeGuestContext(ctypes.Structure):
         ("memory", LJWasmtimeGuestMemory),
         ("handles", LJWasmtimeHandleTable),
     ]
+
+
+class LJWasmtimeHostHooks(ctypes.Structure):
+    _fields_ = [
+        ("ctx", ctypes.c_void_p),
+        ("ffi_load", ctypes.c_void_p),
+        ("ffi_unload", ctypes.c_void_p),
+        ("ffi_symbol", ctypes.c_void_p),
+        ("ffi_call", ctypes.c_void_p),
+        ("ffi_callback_new", ctypes.c_void_p),
+        ("ffi_callback_slot", ctypes.c_void_p),
+        ("ffi_callback_free", ctypes.c_void_p),
+        ("jit_compile", ctypes.c_void_p),
+        ("jit_free", ctypes.c_void_p),
+        ("jit_enter", ctypes.c_void_p),
+        ("jit_patch_exit", ctypes.c_void_p),
+    ]
+
+
+JITCompileCB = ctypes.CFUNCTYPE(
+    ctypes.c_int,
+    ctypes.c_void_p,
+    ctypes.POINTER(LJWasmJITModule),
+    ctypes.POINTER(ctypes.c_void_p),
+)
+JITFreeCB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+JITEnterCB = ctypes.CFUNCTYPE(
+    ctypes.c_int,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_uint32,
+)
+JITPatchCB = ctypes.CFUNCTYPE(
+    ctypes.c_int,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_uint32,
+    ctypes.c_void_p,
+)
 
 
 def load_host(path: Path):
@@ -110,6 +178,36 @@ def load_host(path: Path):
     lib.lj_wasmtime_guest_ffi_call.restype = ctypes.c_int
     lib.lj_wasmtime_guest_ffi_unload.argtypes = [ctx_p, ctypes.c_uint64]
     lib.lj_wasmtime_guest_ffi_unload.restype = None
+    lib.lj_wasmtime_guest_jit_compile.argtypes = [
+        ctx_p,
+        ctypes.c_uint64,
+        ctypes.c_uint64,
+    ]
+    lib.lj_wasmtime_guest_jit_compile.restype = ctypes.c_int
+    lib.lj_wasmtime_guest_jit_free.argtypes = [ctx_p, ctypes.c_uint64]
+    lib.lj_wasmtime_guest_jit_free.restype = None
+    lib.lj_wasmtime_guest_jit_enter.argtypes = [
+        ctx_p,
+        ctypes.c_uint64,
+        ctypes.c_uint64,
+        ctypes.c_uint64,
+        ctypes.c_uint64,
+        ctypes.c_uint32,
+    ]
+    lib.lj_wasmtime_guest_jit_enter.restype = ctypes.c_int
+    lib.lj_wasmtime_guest_jit_patch_exit.argtypes = [
+        ctx_p,
+        ctypes.c_uint64,
+        ctypes.c_uint32,
+        ctypes.c_uint64,
+    ]
+    lib.lj_wasmtime_guest_jit_patch_exit.restype = ctypes.c_int
+    lib.lj_wasmtime_host_set_hooks.argtypes = [
+        ctypes.POINTER(LJWasmtimeHostHooks)
+    ]
+    lib.lj_wasmtime_host_set_hooks.restype = None
+    lib.lj_wasmtime_host_clear_hooks.argtypes = []
+    lib.lj_wasmtime_host_clear_hooks.restype = None
     return lib
 
 
@@ -195,6 +293,126 @@ def guest_module() -> bytes:
             call $ffi_unload))
         """
     )
+
+
+def jit_module_bytes() -> bytes:
+    return wasmtime.wat2wasm("(module (func (export \"entry\") (result i32) i32.const 0))")
+
+
+def jit_desc_bytes(bytes_offset: int, size: int, trace: int) -> bytes:
+    module = LJWasmJITModule()
+    module.bytes = ctypes.cast(bytes_offset, ctypes.POINTER(ctypes.c_uint8))
+    module.size = size
+    module.trace = trace
+    module.entry = 0
+    module.exit = 0
+    module.flags = JIT_F_IR_LOWERED | JIT_F_IMPORT_ENV_MEMORY
+    module.memory_min = 1
+    module.memory_max = 0
+    module.memory_flags = JIT_MEMORY_F_64
+    return ctypes.string_at(ctypes.byref(module), ctypes.sizeof(module))
+
+
+def jit_guest_module() -> bytes:
+    return wasmtime.wat2wasm(
+        f"""
+        (module
+          (import "env" "lj_wasm_import_jit_compile"
+            (func $jit_compile (param i64 i64) (result i32)))
+          (import "env" "lj_wasm_import_jit_free"
+            (func $jit_free (param i64)))
+          (import "env" "lj_wasm_import_jit_enter"
+            (func $jit_enter (param i64 i64 i64 i64 i32) (result i32)))
+          (import "env" "lj_wasm_import_jit_patch_exit"
+            (func $jit_patch_exit (param i64 i32 i64) (result i32)))
+          (memory (export "memory") i64 1)
+          (func (export "compile_a") (result i32)
+            i64.const {JIT_MODULE_A}
+            i64.const {JIT_HANDLE_A}
+            call $jit_compile)
+          (func (export "compile_b") (result i32)
+            i64.const {JIT_MODULE_B}
+            i64.const {JIT_HANDLE_B}
+            call $jit_compile)
+          (func (export "enter_a") (result i32)
+            i64.const {JIT_HANDLE_A}
+            i64.load
+            i64.const 16
+            i64.const 32
+            i64.const 48
+            i32.const 9
+            call $jit_enter)
+          (func (export "patch_a_to_b") (result i32)
+            i64.const {JIT_HANDLE_A}
+            i64.load
+            i32.const 7
+            i64.const {JIT_HANDLE_B}
+            i64.load
+            call $jit_patch_exit)
+          (func (export "free_a")
+            i64.const {JIT_HANDLE_A}
+            i64.load
+            call $jit_free))
+        """
+    )
+
+
+def install_jit_hooks(host):
+    trace_a = ctypes.c_int(100)
+    trace_b = ctypes.c_int(200)
+    trace_a_ptr = ctypes.cast(ctypes.pointer(trace_a), ctypes.c_void_p).value
+    trace_b_ptr = ctypes.cast(ctypes.pointer(trace_b), ctypes.c_void_p).value
+    state = {
+        "compile": 0,
+        "free": 0,
+        "enter": 0,
+        "patch": 0,
+        "last_trace": 0,
+        "last_exitno": 0,
+    }
+
+    @JITCompileCB
+    def jit_compile(_ctx, module_p, handle_out):
+        module = module_p.contents
+        module_bytes = ctypes.string_at(module.bytes, module.size)
+        assert module_bytes.startswith(b"\x00asm")
+        assert module.memory_min == 1
+        assert module.memory_flags == JIT_MEMORY_F_64
+        state["compile"] += 1
+        state["last_trace"] = module.trace
+        handle_out[0] = trace_a_ptr if state["compile"] == 1 else trace_b_ptr
+        return OK
+
+    @JITFreeCB
+    def jit_free(_ctx, handle):
+        assert int(handle) == trace_a_ptr
+        state["free"] += 1
+
+    @JITEnterCB
+    def jit_enter(_ctx, handle, lua_state, base, exit_state, exitno):
+        assert int(handle) == trace_a_ptr
+        assert int(lua_state) == 16
+        assert int(base) == 32
+        assert int(exit_state) == 48
+        state["enter"] += 1
+        state["last_exitno"] = int(exitno)
+        return JIT_ENTER_STATUS
+
+    @JITPatchCB
+    def jit_patch(_ctx, from_handle, exitno, to_handle):
+        assert int(from_handle) == trace_a_ptr
+        assert int(to_handle) == trace_b_ptr
+        state["patch"] += 1
+        state["last_exitno"] = int(exitno)
+        return OK
+
+    hooks = LJWasmtimeHostHooks()
+    hooks.jit_compile = ctypes.cast(jit_compile, ctypes.c_void_p).value
+    hooks.jit_free = ctypes.cast(jit_free, ctypes.c_void_p).value
+    hooks.jit_enter = ctypes.cast(jit_enter, ctypes.c_void_p).value
+    hooks.jit_patch_exit = ctypes.cast(jit_patch, ctypes.c_void_p).value
+    host.lj_wasmtime_host_set_hooks(ctypes.byref(hooks))
+    return state, hooks, (jit_compile, jit_free, jit_enter, jit_patch), (trace_a, trace_b)
 
 
 def main(argv: list[str]) -> int:
@@ -293,6 +511,100 @@ def main(argv: list[str]) -> int:
 
     exports["unload"](store)
     assert i32(exports["call"](store)) == ERR
+
+    state, hooks, callbacks, traces = install_jit_hooks(host)
+    jit_ctx = LJWasmtimeGuestContext()
+
+    def update_jit_context(caller: wasmtime.Caller) -> None:
+        memory = caller.get("memory")
+        if memory is None:
+            raise RuntimeError("jit guest memory export not found")
+        jit_ctx.memory.data = memory.data_ptr(caller)
+        jit_ctx.memory.size = memory.data_len(caller)
+
+    def jit_compile_import(caller, module_ptr, handle_out):
+        update_jit_context(caller)
+        return host.lj_wasmtime_guest_jit_compile(
+            ctypes.byref(jit_ctx), module_ptr, handle_out
+        )
+
+    def jit_free_import(caller, handle):
+        update_jit_context(caller)
+        host.lj_wasmtime_guest_jit_free(ctypes.byref(jit_ctx), handle)
+
+    def jit_enter_import(caller, handle, lua_state, base, exit_state, exitno):
+        update_jit_context(caller)
+        return host.lj_wasmtime_guest_jit_enter(
+            ctypes.byref(jit_ctx), handle, lua_state, base, exit_state, exitno
+        )
+
+    def jit_patch_import(caller, from_handle, exitno, to_handle):
+        update_jit_context(caller)
+        return host.lj_wasmtime_guest_jit_patch_exit(
+            ctypes.byref(jit_ctx), from_handle, exitno, to_handle
+        )
+
+    jit_linker = wasmtime.Linker(engine)
+    jit_linker.define_func(
+        "env",
+        "lj_wasm_import_jit_compile",
+        wasmtime.FuncType([i64, i64], [i32t]),
+        jit_compile_import,
+        access_caller=True,
+    )
+    jit_linker.define_func(
+        "env",
+        "lj_wasm_import_jit_free",
+        wasmtime.FuncType([i64], []),
+        jit_free_import,
+        access_caller=True,
+    )
+    jit_linker.define_func(
+        "env",
+        "lj_wasm_import_jit_enter",
+        wasmtime.FuncType([i64, i64, i64, i64, i32t], [i32t]),
+        jit_enter_import,
+        access_caller=True,
+    )
+    jit_linker.define_func(
+        "env",
+        "lj_wasm_import_jit_patch_exit",
+        wasmtime.FuncType([i64, i32t, i64], [i32t]),
+        jit_patch_import,
+        access_caller=True,
+    )
+
+    jit_instance = jit_linker.instantiate(
+        store, wasmtime.Module(engine, jit_guest_module())
+    )
+    jit_exports = jit_instance.exports(store)
+    jit_memory = jit_exports["memory"]
+    compiled = jit_module_bytes()
+    jit_memory.write(store, compiled, JIT_BYTES)
+    jit_memory.write(store, jit_desc_bytes(JIT_BYTES, len(compiled), 11), JIT_MODULE_A)
+    jit_memory.write(store, jit_desc_bytes(JIT_BYTES, len(compiled), 12), JIT_MODULE_B)
+
+    assert i32(jit_exports["compile_a"](store)) == OK
+    assert read_u64(jit_memory, store, JIT_HANDLE_A) != 0
+    assert state["compile"] == 1
+    assert state["last_trace"] == 11
+    assert i32(jit_exports["compile_b"](store)) == OK
+    assert read_u64(jit_memory, store, JIT_HANDLE_B) != 0
+    assert state["compile"] == 2
+    assert state["last_trace"] == 12
+    assert i32(jit_exports["enter_a"](store)) == JIT_ENTER_STATUS
+    assert state["enter"] == 1
+    assert state["last_exitno"] == 9
+    assert i32(jit_exports["patch_a_to_b"](store)) == OK
+    assert state["patch"] == 1
+    assert state["last_exitno"] == 7
+    jit_exports["free_a"](store)
+    assert state["free"] == 1
+    assert i32(jit_exports["enter_a"](store)) == ERR
+
+    host.lj_wasmtime_host_clear_hooks()
+    _keepalive = (hooks, callbacks, traces)
+    assert _keepalive
     return 0
 
 
