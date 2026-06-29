@@ -12,7 +12,6 @@ except ImportError as exc:
         "`python3 -m pip install wasmtime`"
     ) from exc
 
-LJ_WASM_JIT_STATUS_NYI = -2
 LJ_TISNUM_TAG_HI = 0xFFF90000
 
 
@@ -53,8 +52,8 @@ def main(argv):
     write_f64(memory, store, base + 0, 0.0)  # accumulator SLOAD #2
     write_f64(memory, store, base + 8, 1.0)  # loop index SLOAD #3
     ok = i32_result(entry(store, 0, base, 0))
-    if ok != LJ_WASM_JIT_STATUS_NYI:
-        raise SystemExit(f"expected trace fallthrough status -2, got {ok}")
+    if ok != 2:
+        raise SystemExit(f"expected loop guard failure status 2, got {ok}")
 
     write_i32_tvalue(memory, store, base + 0, 0)
     failed = i32_result(entry(store, 0, base, 0))

@@ -108,6 +108,8 @@ typedef struct WasmTraceCtx {
   SBuf *body;
   uint32_t tmp64;
   uint32_t next_exit;
+  IRRef loopref;
+  int loop_open;
 } WasmTraceCtx;
 
 static uint8_t wasm_ir_valtype(IRIns *ir)
@@ -246,13 +248,17 @@ static int wasm_emit_ref(WasmTraceCtx *ctx, IRRef ref, uint8_t want)
 
 static int wasm_trace_supported(const GCtrace *T)
 {
-  IRRef ref;
+  IRRef ref, loopref = 0;
   for (ref = REF_FIRST; ref < T->nins; ref++) {
     IRIns *ir = &T->ir[ref];
     switch ((IROp)ir->o) {
     case IR_NOP:
     case IR_RENAME:
+      break;
     case IR_LOOP:
+      if (loopref != 0)
+	return 0;
+      loopref = ref;
       break;
     case IR_SLOAD:
       if (!(irt_isint(ir->t) || irt_isnum(ir->t) || irt_istab(ir->t)))
@@ -345,9 +351,13 @@ static int wasm_trace_supported(const GCtrace *T)
       break;
       }
     case IR_PHI:
-      if (!(irt_isint(ir->t) || irt_isnum(ir->t)))
+      if (loopref == 0 || !(irt_isint(ir->t) || irt_isnum(ir->t)) ||
+	  irref_isk(ir->op1))
 	return 0;
-      if (!wasm_ref_can_type(T, ir->op1, wasm_ir_valtype(ir)))
+      if (!irref_isk(ir->op2) && T->ir[ir->op2].o == IR_PHI)
+	return 0;
+      if (!wasm_ref_can_type(T, ir->op1, wasm_ir_valtype(ir)) ||
+	  !wasm_ref_can_type(T, ir->op2, wasm_ir_valtype(ir)))
 	return 0;
       break;
     default:
@@ -531,13 +541,31 @@ static int wasm_emit_eq_guard(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
   return 1;
 }
 
-static int wasm_emit_phi(WasmTraceCtx *ctx, IRRef ref, IRIns *ir)
+static int wasm_emit_loop_backedge(WasmTraceCtx *ctx)
 {
-  uint8_t type = wasm_ir_valtype(ir);
-  if (!wasm_emit_ref(ctx, ir->op1, type))
-    return 0;
-  lj_wasm_putu8(ctx->body, LJ_WASM_OP_LOCAL_SET);
-  lj_wasm_putu32v(ctx->body, wasm_ir_local(ref));
+  const GCtrace *T = ctx->T;
+  IRRef ref;
+  for (ref = ctx->loopref + 1; ref < T->nins; ref++) {
+    IRIns *ir = &T->ir[ref];
+    if (ir->o == IR_PHI) {
+      uint8_t type = wasm_ir_valtype(ir);
+      if (!wasm_emit_ref(ctx, ir->op2, type))
+	return 0;
+      lj_wasm_putu8(ctx->body, LJ_WASM_OP_LOCAL_SET);
+      lj_wasm_putu32v(ctx->body, wasm_ir_local(ref));
+    }
+  }
+  for (ref = ctx->loopref + 1; ref < T->nins; ref++) {
+    IRIns *ir = &T->ir[ref];
+    if (ir->o == IR_PHI) {
+      lj_wasm_putu8(ctx->body, LJ_WASM_OP_LOCAL_GET);
+      lj_wasm_putu32v(ctx->body, wasm_ir_local(ref));
+      lj_wasm_putu8(ctx->body, LJ_WASM_OP_LOCAL_SET);
+      lj_wasm_putu32v(ctx->body, wasm_ir_local(ir->op1));
+    }
+  }
+  lj_wasm_putu8(ctx->body, LJ_WASM_OP_BR);
+  lj_wasm_putu32v(ctx->body, 0);
   return 1;
 }
 
@@ -707,6 +735,8 @@ static int wasm_emit_trace_body(lua_State *L, const GCtrace *T, SBuf *body)
   ctx.body = body;
   ctx.tmp64 = wasm_tmp64_local(T);
   ctx.next_exit = 0;
+  ctx.loopref = 0;
+  ctx.loop_open = 0;
 
   lj_wasm_putu32v(body, (uint32_t)nlocals + 1);
   for (ref = REF_FIRST; ref < T->nins; ref++) {
@@ -723,7 +753,10 @@ static int wasm_emit_trace_body(lua_State *L, const GCtrace *T, SBuf *body)
     case IR_RENAME:
       break;
     case IR_LOOP:
-      lj_wasm_putu8(body, LJ_WASM_OP_NOP);
+      ctx.loopref = ref;
+      ctx.loop_open = 1;
+      lj_wasm_putu8(body, LJ_WASM_OP_LOOP);
+      lj_wasm_putu8(body, LJ_WASM_BLOCKTYPE_EMPTY);
       break;
     case IR_SLOAD: {
       if (!wasm_emit_sload(&ctx, ref, ir))
@@ -770,12 +803,16 @@ static int wasm_emit_trace_body(lua_State *L, const GCtrace *T, SBuf *body)
 	return 0;
       break;
     case IR_PHI:
-      if (!wasm_emit_phi(&ctx, ref, ir))
-	return 0;
       break;
     default:
       return 0;
     }
+  }
+
+  if (ctx.loop_open) {
+    if (!wasm_emit_loop_backedge(&ctx))
+      return 0;
+    lj_wasm_putu8(body, LJ_WASM_OP_END);
   }
 
   lj_wasm_putu8(body, LJ_WASM_OP_I32_CONST);
