@@ -1,6 +1,7 @@
 CC ?= cc
 EMCC ?= emcc
 LLVM_OBJDUMP ?= llvm-objdump
+PYTHON ?= python3
 WASM_OBJDUMP ?= wasm-objdump
 WASM_VALIDATE ?= wasm-validate
 WASM_VALIDATE_FLAGS ?= --enable-memory64
@@ -19,7 +20,7 @@ WASM64_CHECK_DIR ?= /tmp/lj-wasm64-support-check
 WASM64_SKIP_SRC :=
 WASM64_CORE_SRC := $(filter-out $(WASM64_SKIP_SRC),$(notdir $(wildcard $(SRC)/*.c)))
 
-.PHONY: check trace-module-check trace-ir-module-check trace-numeric-for-module-check trace-array-store-module-check trace-array-read-module-check trace-fallback-module-check trace-enter-contract-check wasm64-support-check clean
+.PHONY: check trace-module-check trace-ir-module-check trace-numeric-for-module-check trace-array-store-module-check trace-array-read-module-check trace-runtime-check trace-fallback-module-check trace-enter-contract-check wasm64-support-check clean
 
 wasm_nyi_trace_module: wasm_nyi_trace_module.c $(SRC)/libluajit.a
 	$(CC) $(CFLAGS) -o $@ wasm_nyi_trace_module.c $(SRC)/libluajit.a $(LDLIBS)
@@ -42,7 +43,7 @@ wasm_trace_fallback_module: wasm_trace_fallback_module.c $(SRC)/libluajit.a
 wasm_trace_enter_contract: wasm_trace_enter_contract.c $(SRC)/libluajit.a
 	$(CC) $(CFLAGS) -o $@ wasm_trace_enter_contract.c $(SRC)/libluajit.a $(LDLIBS)
 
-check: trace-module-check trace-ir-module-check trace-numeric-for-module-check trace-array-store-module-check trace-array-read-module-check trace-fallback-module-check trace-enter-contract-check wasm64-support-check
+check: trace-module-check trace-ir-module-check trace-numeric-for-module-check trace-array-store-module-check trace-array-read-module-check trace-runtime-check trace-fallback-module-check trace-enter-contract-check wasm64-support-check
 
 trace-module-check: wasm_nyi_trace_module
 	./wasm_nyi_trace_module > $(OUT)
@@ -107,6 +108,10 @@ trace-array-read-module-check: wasm_trace_array_read_module
 	$(WASM_OBJDUMP) -d $(OUT_ARRAY_READ) | grep -q 'i64.lt_u'
 	$(WASM_OBJDUMP) -d $(OUT_ARRAY_READ) | grep -q 'i32.ge_u'
 	$(WASM_OBJDUMP) -d $(OUT_ARRAY_READ) | grep -q 'i32.const 100'
+
+trace-runtime-check: wasm_trace_numeric_for_module
+	./wasm_trace_numeric_for_module > $(OUT_NUMERIC)
+	$(PYTHON) wasm_trace_runtime_check.py $(OUT_NUMERIC)
 
 trace-fallback-module-check: wasm_trace_fallback_module
 	./wasm_trace_fallback_module > $(OUT_FALLBACK)

@@ -21,6 +21,18 @@ emcc -sMEMORY64=1
 clang --target=wasm64-unknown-unknown
 ```
 
+Developer validation currently also uses WABT and the Python Wasmtime binding:
+
+```sh
+sudo apt-get install -y wabt python3-pip
+python3 -m pip install --break-system-packages wasmtime
+make -C wasm/tools check
+make -C wasm/host/wasmtime check
+```
+
+`wasm/tools check` validates generated memory64 modules and runs a small
+Wasmtime imported-memory smoke test for the numeric trace fixture.
+
 The top-level LuaJIT build currently detects `wasm64` and stops at an explicit
 backend gate. That is intentional until the VM and IR-to-Wasm backend are added.
 
