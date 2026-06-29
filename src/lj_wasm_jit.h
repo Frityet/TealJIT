@@ -14,8 +14,9 @@
 #endif
 
 /*
-** Placeholder status returned by trace modules before real IR lowering exists.
-** This intentionally matches LJ_WASM_HOST_NYI in the host contract.
+** Negative values returned by a trace entry are backend statuses. Non-negative
+** values are LuaJIT trace exit numbers and are interpreted as snapshot IDs by
+** the exit trampoline path. NYI intentionally matches LJ_WASM_HOST_NYI.
 */
 #define LJ_WASM_JIT_STATUS_NYI	(-2)
 

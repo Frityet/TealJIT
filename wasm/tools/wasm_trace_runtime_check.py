@@ -61,6 +61,14 @@ def main(argv):
     if failed != 0:
         raise SystemExit(f"expected numeric guard failure status 0, got {failed}")
 
+    write_f64(memory, store, base + 0, 0.0)
+    write_f64(memory, store, base + 8, 101.0)
+    failed_limit = i32_result(entry(store, 0, base, 0))
+    if failed_limit != 1:
+        raise SystemExit(
+            f"expected first loop guard failure status 1, got {failed_limit}"
+        )
+
 
 if __name__ == "__main__":
     main(sys.argv)
