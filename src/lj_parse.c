@@ -1307,6 +1307,26 @@ static void teal_emit_is(LexState *ls, ExpDesc *v, TealTypeDesc want)
   v->teal_nil = 0;
 }
 
+static void teal_emit_freeze_record(LexState *ls, ExpDesc *e)
+{
+  FuncState *fs = ls->fs;
+  BCReg obj, base, arg;
+  if (!ls->teal || !ls->teal_strict || e->teal_type != TEAL_T_RECORD ||
+      e->teal_nil)
+    return;
+  obj = expr_toanyreg(fs, e);
+  base = fs->freereg;
+  arg = base + 1 + ls->fr2;
+  bcreg_reserve(fs, 2 + ls->fr2);
+  bcemit_AD(fs, BC_GGET, base, const_cstr(fs, "__tealjit_freeze_record"));
+  bcemit_AD(fs, BC_MOV, arg, obj);
+  bcemit_ABC(fs, BC_CALL, base, 1, 2);
+  fs->freereg = base;
+  expr_init(e, VNONRELOC, obj);
+  e->teal_type = TEAL_T_RECORD;
+  e->teal_nil = 0;
+}
+
 static void teal_check_assign(LexState *ls, TealTypeDesc want, ExpDesc *e,
 			      const char *what)
 {
@@ -2839,6 +2859,7 @@ static void parse_return(LexState *ls)
       want.type = fs->teal_rettype;
       want.nilok = fs->teal_retnil;
       teal_check_assign(ls, want, &e, "return type mismatch, ");
+      teal_emit_freeze_record(ls, &e);
     }
     if (nret == 1) {  /* Return one result. */
       if (e.k == VCALL) {  /* Check for tail call. */
